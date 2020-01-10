@@ -1,0 +1,41 @@
+From 84b4350da4e77a3cb313e531fa0c2979d74a2503 Mon Sep 17 00:00:00 2001
+From: Vitezslav Cizek <vcizek@suse.com>
+Date: Wed, 14 Sep 2016 14:50:52 -0400
+Subject: [PATCH] Remove deprecated NSSSessionCacheTimeout from default config.
+
+Signed-off-by: Vitezslav Cizek <vcizek@suse.com>
+---
+ nss.conf.in      | 2 --
+ test/suite1.tmpl | 1 -
+ 2 files changed, 3 deletions(-)
+
+diff --git a/nss.conf.in b/nss.conf.in
+index 9b9ffc8..09402a8 100644
+--- a/nss.conf.in
++++ b/nss.conf.in
+@@ -44,10 +44,8 @@ NSSPassPhraseHelper /usr/libexec/nss_pcache
+ 
+ #   Configure the SSL Session Cache. 
+ #   NSSSessionCacheSize is the number of entries in the cache.
+-#   NSSSessionCacheTimeout is the SSL2 session timeout (in seconds).
+ #   NSSSession3CacheTimeout is the SSL3/TLS session timeout (in seconds).
+ NSSSessionCacheSize 10000
+-NSSSessionCacheTimeout 100
+ NSSSession3CacheTimeout 86400
+ 
+ #
+diff --git a/test/suite1.tmpl b/test/suite1.tmpl
+index 2c09a89..a1bede1 100644
+--- a/test/suite1.tmpl
++++ b/test/suite1.tmpl
+@@ -4,7 +4,6 @@ NSSPassPhraseDialog  file:$SERVER_ROOT/conf/password.conf
+ NSSPassPhraseHelper $SERVER_ROOT/bin/nss_pcache
+ 
+ NSSSessionCacheSize 10000
+-NSSSessionCacheTimeout 100
+ NSSSession3CacheTimeout 86400
+ 
+ Listen 0.0.0.0:$SERVER_PORT
+-- 
+2.9.5
+

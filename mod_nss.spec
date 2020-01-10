@@ -6,12 +6,12 @@
 
 Name: mod_nss
 Version: 1.0.14
-Release: 10%{?dist}.1
+Release: 12%{?dist}
 Summary: SSL/TLS module for the Apache HTTP server
 Group: System Environment/Daemons
 License: ASL 2.0
-URL: https://fedorahosted.org/mod_nss/
-Source: http://fedorahosted.org/released/mod_nss/%{name}-%{version}.tar.gz
+URL: https://pagure.io/mod_nss/
+Source: http://releases.pagure.org/mod_nss/%{name}-%{version}.tar.gz
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 BuildRequires: nspr-devel >= 4.10.8, nss-devel >= 3.19.1
 BuildRequires: httpd-devel, apr-devel, apr-util-devel
@@ -60,6 +60,8 @@ Patch12: mod_nss-pcache_nodbinit.patch
 Patch13: mod_nss-nss_pcache_man.patch
 # Fix TLS Session cache
 Patch14: mod_nss-session_cache.patch
+# Remove NSSSessionCacheTimeout from default config
+Patch15: mod_nss-remove-deprecated-NSSSessionCacheTimeout.patch
 
 %description
 The mod_nss module provides strong cryptography for the Apache Web
@@ -83,6 +85,7 @@ security library.
 %patch12 -p1 -b .pcache_nodbinit
 %patch13 -p1 -b .pcache_man
 %patch14 -p1 -b .session_cache
+%patch15 -p1 -b .deprecated_sessioncachetimeout
 
 # Touch expression parser sources to prevent regenerating it
 touch nss_expr_*.[chyl]
@@ -197,8 +200,12 @@ fi
 %{_sbindir}/gencert
 
 %changelog
-* Wed Jul 19 2017 Rob Crittenden <rcritten@redhat.com> - 1.0.14-10.1
-- TLS session cache was not working (#1479766)
+* Fri Nov  3 2017 Rob Crittenden <rcritten@redhat.com> - 1.0.14-12
+- Correct URL and Source entries to point to pagure.io (#1502362)
+- Remove deprecated NSSSessionCacheTimeout from default config (#1257662)
+
+* Wed Jul 19 2017 Rob Crittenden <rcritten@redhat.com> - 1.0.14-11
+- TLS session cache was not working (#1461580)
 
 * Wed May 10 2017 Rob Crittenden <rcritten@redhat.com> - 1.0.14-10
 - Apply the nss_pcache man page patch (#1382102)
