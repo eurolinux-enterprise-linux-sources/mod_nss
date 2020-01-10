@@ -4,7 +4,7 @@
 
 Name: mod_nss
 Version: 1.0.10
-Release: 1%{?dist}
+Release: 2%{?dist}
 Summary: SSL/TLS module for the Apache HTTP server
 Group: System Environment/Daemons
 License: ASL 2.0
@@ -41,6 +41,9 @@ Patch1: mod_nss-conf.patch
 Patch2: mod_nss-gencert.patch
 # Downgrade 'httpd 2.4' to 'httpd 2.2'
 Patch3: mod_nss-downgrade_httpd_2.4_to_httpd_2.2.patch
+# Allow specific FIPS protocols to be read in and processed from either of the
+# 'NSSProtocol' or 'NSSProxyProtocol' lists in the configuration file
+Patch4: mod_nss-specify_FIPS_protocols_in_protocol_list.patch
 
 %description
 The mod_nss module provides strong cryptography for the Apache Web
@@ -53,6 +56,7 @@ security library.
 %patch1 -p1 -b .conf
 %patch2 -p1 -b .gencert
 %patch3 -p1 -b .downgrade_httpd_2.4_to_httpd_2.2
+%patch4 -p1 -b .FIPS_protocol_list
 
 # Touch expression parser sources to prevent regenerating it
 touch nss_expr_*.[chyl]
@@ -150,6 +154,9 @@ fi
 %{_sbindir}/gencert
 
 %changelog
+* Fri Apr  1 2016 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-2
+- Resolves: rhbz #1322304 - NSSProtocol is ignored when NSSFIPS is enabled.
+
 * Thu Jan 22 2015 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-1
 - Resolves: rhbz #1166316 - Rebase mod_nss to 1.0.10 to support TLSv1.2
 
