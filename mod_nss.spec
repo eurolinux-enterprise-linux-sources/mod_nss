@@ -6,12 +6,12 @@
 
 Name: mod_nss
 Version: 1.0.14
-Release: 12%{?dist}
+Release: 7%{?dist}
 Summary: SSL/TLS module for the Apache HTTP server
 Group: System Environment/Daemons
 License: ASL 2.0
-URL: https://pagure.io/mod_nss/
-Source: http://releases.pagure.org/mod_nss/%{name}-%{version}.tar.gz
+URL: https://fedorahosted.org/mod_nss/
+Source: http://fedorahosted.org/released/mod_nss/%{name}-%{version}.tar.gz
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 BuildRequires: nspr-devel >= 4.10.8, nss-devel >= 3.19.1
 BuildRequires: httpd-devel, apr-devel, apr-util-devel
@@ -48,20 +48,6 @@ Patch6: mod_nss-remove-r-user-from-hook-fixup.patch
 Patch7: mod_nss-clean-semaphore.patch
 # Check certificate database directory permissions
 Patch8: mod_nss-certdb-permissions.patch
-# Die on invalid Protocol settings
-Patch9: mod_nss-invalid-protocol-setting.patch
-# Handle group membership when testing file perms
-Patch10: mod_nss-group-permissions.patch
-# Add OCSP cache tuning directives
-Patch11: mod_nss-ocsp-tuning-knobs.patch
-# Use NoDBInit in nss_pcache
-Patch12: mod_nss-pcache_nodbinit.patch
-# Update nss_pcache man page to drop directory and prefix
-Patch13: mod_nss-nss_pcache_man.patch
-# Fix TLS Session cache
-Patch14: mod_nss-session_cache.patch
-# Remove NSSSessionCacheTimeout from default config
-Patch15: mod_nss-remove-deprecated-NSSSessionCacheTimeout.patch
 
 %description
 The mod_nss module provides strong cryptography for the Apache Web
@@ -79,13 +65,6 @@ security library.
 %patch6 -p1 -b .remove_r_user
 %patch7 -p1 -b .semaphore
 %patch8 -p1 -b .permissions
-%patch9 -p1 -b .protocol_fatal
-%patch10 -p1 -b .group_permissions
-%patch11 -p1 -b .ocsp_tuning
-%patch12 -p1 -b .pcache_nodbinit
-%patch13 -p1 -b .pcache_man
-%patch14 -p1 -b .session_cache
-%patch15 -p1 -b .deprecated_sessioncachetimeout
 
 # Touch expression parser sources to prevent regenerating it
 touch nss_expr_*.[chyl]
@@ -200,27 +179,6 @@ fi
 %{_sbindir}/gencert
 
 %changelog
-* Fri Nov  3 2017 Rob Crittenden <rcritten@redhat.com> - 1.0.14-12
-- Correct URL and Source entries to point to pagure.io (#1502362)
-- Remove deprecated NSSSessionCacheTimeout from default config (#1257662)
-
-* Wed Jul 19 2017 Rob Crittenden <rcritten@redhat.com> - 1.0.14-11
-- TLS session cache was not working (#1461580)
-
-* Wed May 10 2017 Rob Crittenden <rcritten@redhat.com> - 1.0.14-10
-- Apply the nss_pcache man page patch (#1382102)
-
-* Wed May 10 2017 Rob Crittenden <rcritten@redhat.com> - 1.0.14-9
-- Update nss_pcache.8 to drop directory and prefix options (#1382102)
-
-- Don't share mod_nss NSS database with nss_pcache (#1382102)
-* Thu Feb 23 2017 Rob Crittenden <rcritten@redhat.com> - 1.0.14-8
-- Fail start start when there are invalid Protocols defined (#1389114)
-- Handle group membership when testing NSS database filesystem
-  permissions (#1395300)
-- Add OCSP cache tuning directives (#1392582) 
-- Don't share mod_nss NSS database with nss_pcache (#1382102)
-
 * Wed Sep 21 2016 Rob Crittenden <rcritten@redhat.com> - 1.0.14-7
 - Add the permission patch to the repository (#1312583)
 
