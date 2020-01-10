@@ -1,0 +1,335 @@
+#!/bin/bash
+
+# Copyright 2001-2004 The Apache Software Foundation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# $Header$
+#
+# gencert - generate new CA, server and user certificates for NSS testing.
+#
+
+CERTUTIL=/usr/bin/certutil
+
+# Note: In order for the client tests that ship with this module to work
+# properly with this test certificate you need to ensure that the domain of
+# the server is the same as your domain. Otherwise you will get an error message
+# like -12776 (requested domain name does not match the server's certificate).
+
+getFQDN() {
+        max=0
+        maxhost=
+        OS=`uname -s`
+        if [ $OS == "SunOS" ]; then
+                if [ -x /usr/lib/mail/sh/check-hostname ]; then
+                        maxhost=`/usr/lib/mail/sh/check-hostname | awk 'BEGIN { FS=" " } { if ($3 == "OK:") { print $7 } }'`
+                fi
+                echo $maxhost
+                return
+        fi
+        defhost=`hostname` 
+        if [ -e /usr/bin/host -o -e /bin/host ]; then
+            hosthost=`host $defhost | grep -v "not found" | awk '{print $1}'`
+        else
+            hosthost=''
+        fi
+        for host in $defhost $hosthost `hostname -f` `hostname -a` ; do
+                len=`echo $host | wc -c` 
+                if [ $len -gt $max ]; then
+                        max=$len 
+                        maxhost=$host
+                fi
+        done
+        echo $maxhost
+}
+
+FQDN=`getFQDN`
+if [ "x${FQDN}" = "x" ]; then
+   FQDN=localhost.localdomain
+fi
+
+CA_CERTDN="CN=Certificate Shack, O=example.com, C=US"
+SERVER_CERTDN="CN=${FQDN}, O=example.com, C=US"
+ALPHA_CERTDN="E=alpha@${FQDN}, CN=Frank Alpha, UID=alpha, OU=People, O=example.com, C=US"
+BETA_CERTDN="E=beta@${FQDN}, CN=Anna Beta, UID=beta, OU=People, O=example.com, C=US"
+COLON_CERTDN="E=colon:user@${FQDN}, CN=Colon User, UID=colon, OU=People, O=example.com, C=US"
+
+# size of the keys
+KEYSIZE=2048
+
+# validity of the certs in months
+VALIDITY=48
+
+# starting point of serial numbers. 1 is the CA, 2 is the client cert "alpha"
+# 3 is the server cert "Server-Cert".
+CERTSERIAL=0
+
+if [ $# -lt 1 ]
+then
+    echo "usage: $0 <destdir>" 1>&2
+    exit 1
+fi
+DEST=`echo $1 | cut -d: -f2`
+if [ ! -d $DEST -o ! -w $DEST ]
+then
+    echo "ERROR: $1 must be writable directory." 1>&2
+    exit 1
+fi
+
+DBDIR=$1
+shift
+
+TEST=0
+SNI=0
+
+while [[ $# -ge 1 ]]
+do
+    key="$1"
+    case $key in
+        -s|--sni)
+            SNI="$2"
+            shift
+            ;;
+        -t|--test)
+            TEST=1
+            ;;
+        *)
+            echo "Unknown option $1"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+echo "TEST = $TEST"
+echo "SNI = $SNI"
+
+echo "httptest" > $DEST/pw.txt
+
+function generate_server_sni_cert {
+    hostname=$1
+
+    local SERVER_DN="CN=${hostname}, O=SNI, O=example.com, C=US"
+    local NICKNAME="Server-Cert-${hostname}"
+
+    echo ""
+    echo "#####################################################################"
+    echo "Generating $NICKNAME server certificate request"
+    echo "#####################################################################"
+    if [ -e /dev/urandom ]; then
+        (ps -elf; date; dd if=/dev/urandom count=1 bs=1024 2>/dev/null| tr -dc 'a-zA-Z0-9') > $DEST/noise
+    else
+        (ps -elf; date; dd if=/dev/random count=1 bs=128 2>/dev/null| tr -dc 'a-zA-Z0-9') > $DEST/noise
+    fi
+    $CERTUTIL -R -d $DBDIR \
+                -s "$SERVER_DN" \
+                -o $DEST/tmpcertreq \
+                -g $KEYSIZE \
+                -z $DEST/noise \
+                -f $DEST/pw.txt
+
+    echo ""
+    echo "#####################################################################"
+    echo "Generating $NICKNAME server certificate"
+    echo "#####################################################################"
+    let CERTSERIAL=CERTSERIAL+1
+    echo -e "2\n9\nn\n1\n9\nn\n" | \
+    $CERTUTIL -C -d $DBDIR \
+                -c cacert \
+                -i $DEST/tmpcertreq \
+                -o $DEST/tmpcert.der \
+                -m $CERTSERIAL \
+                -v $VALIDITY \
+                -f $DEST/pw.txt \
+                -1 \
+                -5 \
+                -8 $hostname
+
+    rm $DEST/tmpcertreq
+
+    echo ""
+    echo "#####################################################################"
+    echo "Importing $NICKNAME certificate into server cert DB"
+    echo "#####################################################################"
+    $CERTUTIL -A -d $DBDIR -n $NICKNAME \
+                -t u,u,u \
+                -i $DEST/tmpcert.der \
+                -f $DEST/pw.txt
+ 
+    rm $DEST/tmpcert.der
+}
+
+echo ""
+echo "#####################################################################"
+echo "Generating new server certificate and key database. The password"
+echo "is httptest"
+echo "#####################################################################"
+$CERTUTIL -N -d $DBDIR -f $DEST/pw.txt
+
+echo ""
+echo "#####################################################################"
+echo "Generating self-signed client CA certificate"
+echo "#####################################################################"
+(ps -elf; date; netstat -a) > $DEST/noise
+let CERTSERIAL=CERTSERIAL+1
+# 5 9 n  -> Cert signing key
+# y 10 y  -> basic constraints: CA cert
+# 5 6 7 9 n  -> SSL, S/MIME, Object signing CA
+echo -e "5\n9\nn\ny\n10\ny\n5\n6\n7\n9\nn\n" | \
+$CERTUTIL -S -d $DBDIR -n cacert \
+            -s "$CA_CERTDN" \
+            -x \
+            -t CTu,CTu,CTu \
+            -g $KEYSIZE \
+            -m $CERTSERIAL \
+            -v $VALIDITY \
+            -f $DEST/pw.txt \
+            -z $DEST/noise \
+            -2 \
+            -1 \
+
+echo ""
+echo "#####################################################################"
+echo "Generating user certificate for \"alpha\"."
+echo "#####################################################################"
+(ps -elf; date; netstat -a) > $DEST/noise
+let CERTSERIAL=CERTSERIAL+1
+# 0 2 9 n  -> Key usage: Key Encipherment, Digital Signature
+# 0 9 n  -> SSL Client
+echo -e "0\n2\n9\nn\n0\n9\nn\n" | \
+$CERTUTIL -S -d $DBDIR -n alpha \
+            -s "$ALPHA_CERTDN" \
+            -c cacert \
+            -t u,pu,u \
+            -g $KEYSIZE \
+            -m $CERTSERIAL \
+            -v $VALIDITY \
+            -f $DEST/pw.txt \
+            -z $DEST/noise \
+            -1 \
+            -5 \
+            -7 alpha@${FQDN}
+
+echo ""
+echo "#####################################################################"
+echo "Generating user certificate for \"beta\"."
+echo "#####################################################################"
+(ps -elf; date; netstat -a) > $DEST/noise
+let CERTSERIAL=CERTSERIAL+1
+# 0 2 9 n  -> Key usage: Key Encipherment, Digital Signature
+# 0 9 n  -> SSL Client
+echo -e "0\n2\n9\nn\n0\n9\nn\n" | \
+$CERTUTIL -S -d $DBDIR -n beta \
+            -s "$BETA_CERTDN" \
+            -c cacert \
+            -t u,pu,u \
+            -g $KEYSIZE \
+            -m $CERTSERIAL \
+            -v $VALIDITY \
+            -f $DEST/pw.txt \
+            -z $DEST/noise \
+            -1 \
+            -5 \
+            -7 beta@${FQDN}
+
+if [ $TEST == 1 ]; then
+echo ""
+echo "#####################################################################"
+echo "Generating user certificate for \"colon\"."
+echo "#####################################################################"
+(ps -elf; date; netstat -a) > $DEST/noise
+let CERTSERIAL=CERTSERIAL+1
+# 0 2 9 n  -> Key usage: Key Encipherment, Digital Signature
+# 0 9 n  -> SSL Client
+echo -e "0\n2\n9\nn\n0\n9\nn\n" | \
+$CERTUTIL -S -d $DBDIR -n colon \
+            -s "$COLON_CERTDN" \
+            -c cacert \
+            -t u,pu,u \
+            -g $KEYSIZE \
+            -m $CERTSERIAL \
+            -v $VALIDITY \
+            -f $DEST/pw.txt \
+            -z $DEST/noise \
+            -1 \
+            -5
+fi
+
+echo ""
+echo "#####################################################################"
+echo "Generating server certificate request"
+
+echo ""
+echo "#####################################################################"
+echo "Generating server certificate request"
+echo "#####################################################################"
+(ps -elf; date; netstat -a) > $DEST/noise
+$CERTUTIL -R -d $DBDIR \
+            -s "$SERVER_CERTDN" \
+            -o $DEST/tmpcertreq \
+            -g $KEYSIZE \
+            -z $DEST/noise \
+            -f $DEST/pw.txt
+
+echo ""
+echo "#####################################################################"
+echo "Generating server certificate"
+echo "#####################################################################"
+let CERTSERIAL=CERTSERIAL+1
+echo -e "2\n9\nn\n1\n9\nn\n" | \
+$CERTUTIL -C -d $DBDIR \
+            -c cacert \
+            -i $DEST/tmpcertreq \
+            -o $DEST/tmpcert.der \
+            -m $CERTSERIAL \
+            -v $VALIDITY \
+            -f $DEST/pw.txt \
+            -1 \
+            -5 \
+            -8 $FQDN
+
+rm $DEST/tmpcertreq
+
+echo ""
+echo "#####################################################################"
+echo "Importing server certificate into server cert DB"
+echo "#####################################################################"
+$CERTUTIL -A -d $DBDIR -n Server-Cert \
+            -t u,u,u \
+            -i $DEST/tmpcert.der \
+            -f $DEST/pw.txt
+
+rm $DEST/tmpcert.der
+
+if [ $SNI -gt 0 ]; then
+    SNI=`expr $SNI + 1`
+    count=1
+    while test $count -lt $SNI ; do
+        generate_server_sni_cert www$count.example.com
+        count=`expr $count + 1`
+    done
+fi
+
+echo ""
+echo "#####################################################################"
+echo "Cleaning up"
+echo "#####################################################################"
+rm $DEST/pw.txt
+rm $DEST/noise
+
+echo ""
+echo "The database password is httptest"
+echo ""
+
+exit 0

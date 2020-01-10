@@ -1,0 +1,333 @@
+2016-04-15  Rob Crittenden <rcritten@redhat.com>
+    * Become 1.0.14
+
+2016-03-31  Rob Crittenden <rcritten@redhat.com>
+    * Created valgrind suppression files to ease debugging
+
+2016-03-30  Rob Crittenden <rcritten@redhat.com>
+    * Implement SSL_PPTYPE_FILTER to call executables to get
+      the key password pins. Can be used to prompt with systemd.
+
+2016-03-30  Vitezslav Cizek <vcizek@suse.com>
+    * Improvements to migrate.pl
+
+2016-03-17  Rob Crittenden <rcritten@redhat.com>
+    * OpenSSL ciphers stopped parsing at +, CVE-2016-3099
+
+2016-03-04  Rob Crittenden <rcritten@redhat.com>
+
+    * Fix a number of issues discovered by clang-analyzer
+    * Become 1.0.13
+
+2016-03-02  Rob Crittenden <rcritten@redhat.com>
+
+    * Extract SAN from server/client certificates into env
+    * Fix memory leak when renegotiating a cipher
+
+2016-02-29  Rob Crittenden <rcritten@redhat.com>
+
+    * Fix test for DH cipher directive
+    * Check for test and netstat before trying to use them
+    * Don't ignore NSSProtocol when NSSFIPS is enabled
+      Based on patch by Matthew Harmsen <mharmsen@redhat.com>
+
+2016-02-24  Rob Crittenden <rcritten@redhat.com>
+
+    * Use proper shell syntax to avoid creating /0
+    
+2016-02-15  Rob Crittenden <rcritten@redhat.com>
+
+    * tests: Centralize the openssl ciphers flags when comparing
+
+2016-02-10  Rob Crittenden <rcritten@redhat.com>
+
+    * Basic test case for DHE cipher negotiation
+
+2016-02-09  Rob Crittenden <rcritten@redhat.com>
+
+    * Remove -DH from test strings, duplicate test, fix test
+    
+2016-02-08 Christian Heimes <cheimes@redhat.com>
+    * Add server support for DHE ciphers.
+      Similar patch was provided by Vitezslav Cizek <vcizek@suse.com>
+      Heavily modified by Rob Crittenden <rcritten@redhat.com>
+    
+2016-01-18  Rob Crittenden <rcritten@redhat.com>
+    * Drop the check that NSSProxyNickname be required
+    * Add basic reverse proxy test case
+
+2016-01-14  Rob Crittenden <rcritten@redhat.com>
+    * Don't send SSL alert on SNI lookup failure
+    * Fail for colons in credentials with FakeBasicAuth
+    * Always call SSL_ShutdownServerSessionIDCache() in ModuleKill
+
+2015-11-18  Rob Crittenden <rcritten@redhat.com>
+    * Document some python dependencies needed by make check
+    * Add cipher test for ECDH+aRSA
+    * Quote gcm and sha384 config values when comparing them
+
+2015-10-02  Rob Crittenden <rcritten@redhat.com>
+    * Integrate patch from Stanislav Tokos to set the SNI hostname
+      on reverse proxy requests.
+    * Cleanup a bunch of trailing whitespace spread across all the
+      source files.
+    * Become 1.0.12
+
+2015-10-01  Rob Crittenden <rcritten@redhat.com>
+    * Add compatibility for Apache 2.2 and older versions of NSS.
+      Tested on RHEL 6.5.
+    * Replace some PR_Free calls with more correct PORT_Free.
+    * Initialize session_tickets as FALSE instead of UNSET.
+    * Modernize the autotools configuration, generate config.h
+    * Get the version from config.h to get the proper mod_nss version
+      for reporting at runtime. It previously displayed the version
+      of Apache where the mod_nss version should have gone.
+
+2015-09-25  Rob Crittenden <rcritten@redhat.com>
+    * Add support for SNI
+    * Display hints if there are issues initializing NSS
+
+2015-09-24  Rob Crittenden <rcritten@redhat.com>
+    * Fix bad memory access and memory leak in CGI variables
+    * Add optional support for some SHA384 ciphers
+    * Add the SECURE_RENEG environment variable
+
+2015-09-21  Rob Crittenden <rcritten@redhat.com>
+    * Fix a bunch of issues related to OpenSSL cipher parsing
+
+2015-08-27  Rob Crittenden <rcritten@redhat.com>
+    * Fix a bunch of compiler warnings
+    * Permanently disabled openssl ciphers could be enabled (CVE-2015-5244)
+    
+2015-07-28  Matthew Harmsen <mharmsen@redhat.com>
+    * Add 'v' to refererences of protocols (e.g. SSLv3) (#1066236)
+
+2015-07-27  Rob Crittenden <rcritten@redhat.com>
+    * Add RenegBufferSize option (#1214366)
+    * Add support for TLS Session Tickets (RFC 5077)
+    * Fix logical AND support in OpenSSL cipher compatibility (CVE-2015-3276)
+
+2014-12-10  Rob Crittenden <rcritten@redhat.com>
+    * Become 1.0.11
+
+2014-11-12  Rob Crittenden <rcritten@redhat.com>
+    * Add compatability for mod_ssl-style cipher definitions (#862938)
+    * Add Camelia ciphers
+    * Remove Fortezza ciphers
+    * Add TLSv1.2-specific ciphers
+
+2014-11-12  Rob Crittenden <rcritten@redhat.com>
+    * Initialize ciphers to all disabled before renegotiation
+      (#1165408)
+
+2014-11-06  Rob Crittenden <rcritten@redhat.com>
+    * Completely remove support for SSLv2
+
+2014-10-28  Rob Crittenden <rcritten@redhat.com>
+    * Add support for sqlite NSS databases (#1057650)
+
+2014-10-22  Stanislav Tokos <stokos@suse.de>
+    * Compare subject CN and VS hostname during server start up
+
+2014-10-16  Rob Crittenden <rcritten@redhat.com>
+    * Add support for enabling TLS v1.2
+    * Don't enable SSL 3 by default (CVE-2014-3566)
+    * Improve protocol testing
+
+2014-02-20  Rob Crittenden <rcritten@redhat.com>
+    * Sync with Fedora builds which were basicaly the defacto upstream.
+    * Add nss_pcache man page
+    * Fix CVE-2013-4566
+    * Move nss_pcache to /usr/libexec
+    * Fix argument handling in nss_pcache
+    * Support httpd 2.4+
+
+2013-10-11  Tomas Hoger <thoger@redhat.com>
+    * Documentation formatting fixes
+
+2013-10-11  Rob Crittenden <rcritten@redhat.com>
+    * Only clear the SSL Session Cache when shutting the server down.
+
+2013-10-11  Matthew Harmsen <mharmsen@redhat.com>
+    * Add support for TLS v1.1
+
+2013-07-02  Matthew Harmsen <mharmsen@redhat.com>
+    * Add man page for nss_pcache, update man page for gencert
+
+2011-10-09  Rob Crittenden <rcritten@redhat.com>
+    * Fix static array overrun when generating arg list for nss_pcache
+
+2011-06-14  Rob Crittenden <rcritten@redhat.com>
+    * Always copy in client certificate and fix FakeBasicAuth
+
+    * When NSSOptions +FakeBasicAuth is set for a directory, and a
+      certificate is not provided with which the BasicAuth can be Faked,
+      and the client provides an Authorization header, the FakeBasicAuth
+      code in mod_nss may not properly reject an attempt to spoof.
+
+    * No need to shut things down if NSS isn't initialized.
+
+2011-03-02  Rob Crittenden <rcritten@redhat.com>
+    * Add semaphore lock around retrieving token PINs to avoid overruns.
+
+2011-02-03  Rob Crittenden <rcritten@redhat.com>
+    * Add man page for gencert
+
+2011-01-12  Rob Crittenden <rcritten@redhat.com>
+    * Don't use memcpy as it may operate on overlapping memory (#669118)
+      Patch ported from mod_ssl by Stephen Gallagher <sgallagh@redhat.com>
+
+2010-09-22  Rob Crittenden <rcritten@redhat.com>
+    * Only call PK11_ListCerts once and pass it when configuring each
+      virtual server. This saves considerable time when there are a lot
+      of certificates and/or virtual servers. (#635324)
+    * Change enforce so that we only check the validity of the certificate
+      if enforcecerts is enabled (the default).
+      Patch contributed by Wolter Eldering <wolter.eldering@vanad.com.cn>
+
+2010-09-17  Rob Crittenden <rcritten@redhat.com>
+    * Fix endless read loop in some situations when handling POST data
+      (#620856)
+      This was discovered in the dogtag TPS subsystem. I haven't been able
+      to duplicate it outside of that but it is trivial inside. This seems
+      to fix it and brings the code closer to what mod_ssl does here as well.
+
+2010-05-14  Rob Crittenden <rcritten@redhat.com>
+    * Ignore SIGHUP in nss_pcache (#591889). 
+      Contributed by Joshua Roys <roysjosh@gmail.com>
+
+2010-05-13  Rob Crittenden <rcritten@redhat.com>
+    * Compare CN value of remote host with requested host in reverse proxy.
+    * Add configuration option to disable this, defaulting to on. (#591224)
+      Based on patch from Joshua Roys <roysjosh@gmail.com>
+
+2010-03-22  Rob Crittenden <rcritten@redhat.com>
+    * Update list of errors we translate
+
+2010-03-02  Rob Crittenden <rcritten@redhat.com>
+    * Add controls for managing SSL renegotiation
+      NSS is introducing some new controls in response to CVE-2009-3555,
+      MITM attacks via session renegotiation. This patch adds some tuning
+      so these options can be set at run time.
+      Patch contributed by Kai Engert <kengert@redhat.com>
+
+2008-07-21  Rob Crittenden <rcritten@redhat.com>
+    * mod_nss 1.0.8
+
+2008-07-02  Rob Crittenden <rcritten@redhat.com>
+    * Don't allow blank passwords if FIPS is enabled. This is not
+      allowed by the NSS FIPS 140-2 security policy.
+
+2008-05-16  Rob Crittenden <rcritten@redhat.com>
+    * No need to link with softokn3
+    * Fix FIPS mode
+    * There seem to be a problem in NSS_Shutdown() that makes subsequent
+      logins appear to succeed but they actually are skipped causing keys
+      and certs to not be available.
+    * Also switch an error message to a warning related to FIPS ciphers.
+
+2008-05-09  Rob Crittenden <rcritten@redhat.com>
+
+    * NSS has been modified to not allow a fork after an NSS_Init() in the
+      soft token. It apparently always did this for hardware tokens as it is
+      part of the PKCS#11 spec.
+    * This moves the initialization code into the child process init
+      function.
+
+2008-01-03  Rob Crittenden <rcritten@redhat.com>
+
+    * See if the certificate has a version before trying to decode it into
+      a CGI variable.
+
+2007-10-18  Rob Crittenden <rcritten@redhat.com>
+
+    * If mod_ssl isn't loaded then register the hooks to mod_proxy so we
+      can do at least secure proxy in front of an unsecure host.
+
+2007-06-07  Rob Crittenden <rcritten@redhat.com>
+
+    * The error message was wrong if NSSPassPhraseHelper pointed to a
+      non-existant file.
+    * Don't require a password file AND NSSPassPhraseHelper. Only
+      the helper is required. 
+       
+2007-06-01  Rob Crittenden <rcritten@redhat.com>
+
+    * mod_nss 1.0.7
+    * Stop processing tokens when a login fails so we can correctly
+      report the failure.
+    * Fix an off-by-one error in nss_pcache that prevented 1 character
+      passwords (not a huge problem but a bug none-the-less).
+    * Bring in some updates based on diffs from 2.0.59 to 2.2.4
+        * Do explicit TRUE/FALSE tests with sc->enabled to see if SSL is
+          enabled.
+        * Don't depend on the fact that TRUE == 1
+        * Remove some dead code
+        * Minor update to the buffer code that buffers POST data during a
+          renegotation
+        * Optimize setting environment variables by using a switch statement.
+    * Fix typo in cipher echde_rsa_null (transposed h and d).
+    * The way I was using to detect the model being used was incorrect. Now
+      use the # of threads available. Guaranteed to be 0 for prefork and > 0
+      for worker (threaded)
+
+2006-10-27  Rob Crittenden <rcritten@redhat.com>
+
+    * mod_nss 1.0.6
+    * If NSSEngine is off then simply don't initialize NSS at all.
+    * Add support for setting a default OCSP responder. 
+
+2006-10-17  Rob Crittenden <rcritten@redhat.com>
+
+    * mod_nss 1.0.5
+    * Fix for a minor problem introduced with 1.0.4. NSS_Shutdown() was being
+      called during module unload even if SSL wasn't enabled causing an error
+      to display in the log.
+
+2006-10-11  Rob Crittenden <rcritten@redhat.com>
+
+    * mod_nss 1.0.4 
+    * Merged in some changes from mod_ssl:
+        * new env variables SSL_{SERVER,CLIENT}_V_REMAIN that contains number
+          of days until certificate expires
+        * Attempt to buffer POST data in a SSL renegotiation. 
+    * And some changes specific to mod_nss:
+        * Better way to distinguish Apache 2.0.x versus Apache 2.2.x. The old
+          way broke when 2.0.56 was introduced.
+        * Fix crash bug if the stored token password doesn't match the
+          database password
+        * Add new NSSPassPhraseDialog method, defer, where only the tokens
+          that are found in the file pointed to by this directive are
+          initialized.
+        * Fix race condition in initializing the NSS session cache that could
+          cause a core on startup.
+        * Update nss.conf.in to contain LogLevel and its own log files
+        * A missing initialization when built with ECC support that could
+          cause the server to not start 
+
+2006-06-21  Rob Crittenden <rcritten@redhat.com>
+
+    * mod_nss 1.0.3
+    * Final ECC support
+    * Compiles on Solaris with the Forte Workshop compiler (tested with 6.2
+      and 11).
+    * A number of compilation warnings were addressed
+    * gencert now uses bash instead of ksh 
+
+2006-03-02  Rob Crittenden <rcritten@redhat.com>
+
+    * Experimental Eliptical Curve Cryptopgraphy (ECC) added. Requires a
+      version of NSS also build with ECC support. Available in the CVS tip. 
+
+2006-01-31  Rob Crittenden <rcritten@redhat.com>
+
+    * mod_nss 1.0.2
+    * Add support for Apache 2.2 (contributed by Oden Eriksson) 
+
+2006-09-20  Rob Crittenden <rcritten@redhat.com>
+
+    * mod_nss 1.0.0
+    * Support for SSLv2, SSLv3, TLSv1
+    * OCSP and CRLs
+    * Client certificate authentication
+    * Can run concurrently with mod_ssl 

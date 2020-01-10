@@ -1,0 +1,127 @@
+From 302905ffe8fdcb9abdf36f16bc4420f5e1dbab01 Mon Sep 17 00:00:00 2001
+From: Rob Crittenden <rcritten@redhat.com>
+Date: Thu, 23 Feb 2017 13:06:21 -0500
+Subject: [PATCH] Handle group membership when testing for file permissions
+
+This was a bit of a corner case but group membership wasn't
+considered when trying to determine if the NSS databases are
+readable.
+
+Resolves BZ 1395300
+---
+ nss_engine_init.c | 45 +++++++++++++++++++++++++++++++++------------
+ 1 file changed, 33 insertions(+), 12 deletions(-)
+
+diff --git a/nss_engine_init.c b/nss_engine_init.c
+index 0bb2054..14f86d8 100644
+--- a/nss_engine_init.c
++++ b/nss_engine_init.c
+@@ -29,6 +29,7 @@
+ #include "cert.h"
+ #include <sys/types.h>
+ #include <pwd.h>
++#include <grp.h>
+ 
+ static SECStatus ownBadCertHandler(void *arg, PRFileDesc * socket);
+ static SECStatus ownHandshakeCallback(PRFileDesc * socket, void *arg);
+@@ -56,17 +57,33 @@ static char *version_components[] = {
+  * Return 0 on failure or file doesn't exist
+  * Return 1 on success
+  */
+-static int check_path(uid_t uid, gid_t gid, char *filepath, apr_pool_t *p)
++static int check_path(const char *user, uid_t uid, gid_t gid, char *filepath,
++                      apr_pool_t *p)
+ {
+     apr_finfo_t finfo;
+-    int rv;
++    PRBool in_group = PR_FALSE;
++    struct group *gr;
++    int i = 0;
++
++    if ((apr_stat(&finfo, filepath, APR_FINFO_PROT | APR_FINFO_OWNER, p))
++        == APR_SUCCESS) {
++        if ((gr = getgrgid(finfo.group)) == NULL) {
++            return 0;
++        }
+ 
+-    if ((rv = apr_stat(&finfo, filepath, APR_FINFO_PROT | APR_FINFO_OWNER,
+-         p)) == APR_SUCCESS) {
++        if (gid == finfo.group) {
++            in_group = PR_TRUE;
++        } else {
++            while ((gr->gr_mem != NULL) && (gr->gr_mem[i] != NULL)) {
++                if (!strcasecmp(user, gr->gr_mem[i++])) {
++                    in_group = PR_TRUE;
++                    break;
++                }
++            }
++        }
+         if (((uid == finfo.user) &&
+             (finfo.protection & APR_FPROT_UREAD)) ||
+-            ((gid == finfo.group) &&
+-                (finfo.protection & APR_FPROT_GREAD)) ||
++            (in_group && (finfo.protection & APR_FPROT_GREAD)) ||
+             (finfo.protection & APR_FPROT_WREAD)
+            )
+         {
+@@ -176,7 +193,7 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
+                 "Checking permissions for user %s: uid %d gid %d",
+                 mc->user, pw->pw_uid, pw->pw_gid);
+ 
+-            if (!(check_path(pw->pw_uid, pw->pw_gid, dbdir, p))) {
++            if (!(check_path(mc->user, pw->pw_uid, pw->pw_gid, dbdir, p))) {
+                 ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
+                     "Server user %s lacks read access to NSS "
+                     "database directory %s.", mc->user, dbdir);
+@@ -186,7 +203,8 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
+             if (strncasecmp(mc->pCertificateDatabase, "sql:", 4) == 0) {
+                 apr_snprintf(filepath, 1024, "%s/key4.db",
+                              mc->pCertificateDatabase+4);
+-                if (!(check_path(pw->pw_uid, pw->pw_gid, filepath, p))) {
++                if (!(check_path(mc->user, pw->pw_uid, pw->pw_gid, filepath,
++                      p))) {
+                     ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
+                         "Server user %s lacks read access to NSS key "
+                         "database %s.", mc->user, filepath);
+@@ -194,7 +212,8 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
+                 }
+                 apr_snprintf(filepath, 1024, "%s/cert9.db",
+                              mc->pCertificateDatabase+4);
+-                if (!(check_path(pw->pw_uid, pw->pw_gid, filepath, p))) {
++                if (!(check_path(mc->user, pw->pw_uid, pw->pw_gid, filepath,
++                      p))) {
+                     ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
+                         "Server user %s lacks read access to NSS cert "
+                         "database %s.", mc->user, filepath);
+@@ -203,7 +222,8 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
+             } else {
+                 apr_snprintf(filepath, 1024, "%s/key3.db",
+                              mc->pCertificateDatabase);
+-                if (!(check_path(pw->pw_uid, pw->pw_gid, filepath, p))) {
++                if (!(check_path(mc->user, pw->pw_uid, pw->pw_gid, filepath,
++                      p))) {
+                     ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
+                         "Server user %s lacks read access to NSS key "
+                         "database %s.", mc->user, filepath);
+@@ -211,7 +231,8 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
+                 }
+                 apr_snprintf(filepath, 1024, "%s/cert8.db",
+                              mc->pCertificateDatabase);
+-                if (!(check_path(pw->pw_uid, pw->pw_gid, filepath, p))) {
++                if (!(check_path(mc->user, pw->pw_uid, pw->pw_gid, filepath,
++                      p))) {
+                     ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
+                         "Server user %s lacks read access to NSS cert "
+                         "database %s.", mc->user, filepath);
+@@ -219,7 +240,7 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
+                 }
+                 apr_snprintf(filepath, 1024, "%s/secmod.db",
+                              mc->pCertificateDatabase);
+-                if (!(check_path(pw->pw_uid, pw->pw_gid, filepath, p))) {
++                if (!(check_path(mc->user, pw->pw_uid, pw->pw_gid, filepath, p))) {
+                     ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
+                         "Server user %s lacks read access to NSS secmod "
+                         "database %s.", mc->user, filepath);
+-- 
+2.9.3
+

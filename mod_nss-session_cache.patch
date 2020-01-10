@@ -1,0 +1,76 @@
+From 5709d481a3cd327c157a1f39a2e9018e0feefd75 Mon Sep 17 00:00:00 2001
+From: Rob Crittenden <rcritten@redhat.com>
+Date: Tue, 7 Feb 2017 10:46:56 -0500
+Subject: [PATCH] Fix the TLS Session ID cache
+
+At some point that I never noticed the way I was trying to
+determine whether the worker or prefork model was being used
+broke such that the reverse of what I intended was happening
+causing no session ID caching at all.
+
+My first crack at this fixed the query to be used which fixed
+the prefork model but the worker model was only caching about
+20% of requests. This is because it is a hybrid of
+forked/threading so still needs the MP cache.
+
+By configuring MP for all I now get the expected level of
+caching. I used the NSS tool strsclnt to confirm levels of
+caching.
+---
+ nss_engine_init.c | 19 +++++--------------
+ 1 file changed, 5 insertions(+), 14 deletions(-)
+
+diff --git a/nss_engine_init.c b/nss_engine_init.c
+index aec845a..2ffff53 100644
+--- a/nss_engine_init.c
++++ b/nss_engine_init.c
+@@ -430,7 +430,6 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
+     server_rec *s;
+     int sslenabled = FALSE;
+     int fipsenabled = FALSE;
+-    int threaded = 0;
+     struct semid_ds status;
+     char *split_vhost_id = NULL;
+     char *last1;
+@@ -637,11 +636,7 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
+ 
+     ap_log_error(APLOG_MARK, APLOG_INFO, 0, base_server,
+         "Initializing SSL Session Cache of size %d. SSL3/TLS timeout = %d.", mc->session_cache_size, mc->ssl3_session_cache_timeout);
+-    ap_mpm_query(AP_MPMQ_MAX_THREADS, &threaded);
+-    if (!threaded)
+-        SSL_ConfigMPServerSIDCache(mc->session_cache_size, (PRUint32) mc->session_cache_timeout, (PRUint32) mc->ssl3_session_cache_timeout, NULL);
+-    else
+-        SSL_ConfigServerSessionIDCache(mc->session_cache_size, (PRUint32) mc->session_cache_timeout, (PRUint32) mc->ssl3_session_cache_timeout, NULL);
++    SSL_ConfigMPServerSIDCache(mc->session_cache_size, (PRUint32) mc->session_cache_timeout, (PRUint32) mc->ssl3_session_cache_timeout, NULL);
+ 
+     /* Load our layer */
+     nss_io_layer_init();
+@@ -1525,7 +1520,6 @@ void nss_init_Child(apr_pool_t *p, server_rec *base_server)
+     SSLModConfigRec *mc = myModConfig(base_server);
+     SSLSrvConfigRec *sc;
+     server_rec *s;
+-    int threaded = 0;
+     int sslenabled = FALSE;
+ 
+     mc->pid = getpid(); /* only call getpid() once per-process */
+@@ -1555,13 +1549,10 @@ void nss_init_Child(apr_pool_t *p, server_rec *base_server)
+         return;
+     }
+ 
+-    ap_mpm_query(AP_MPMQ_MAX_THREADS, &threaded);
+-    if (!threaded) {
+-        if (SSL_InheritMPServerSIDCache(NULL) != SECSuccess) {
+-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+-                         "SSL_InheritMPServerSIDCache failed");
+-            nss_log_nss_error(APLOG_MARK, APLOG_ERR, NULL);
+-        }
++    if (SSL_InheritMPServerSIDCache(NULL) != SECSuccess) {
++        ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
++                     "SSL_InheritMPServerSIDCache failed");
++        nss_log_nss_error(APLOG_MARK, APLOG_ERR, NULL);
+     }
+ 
+     nss_init_SSLLibrary(base_server, mc->pPool);
+-- 
+2.9.4
+

@@ -1,0 +1,167 @@
+# Global SSL configuration
+NSSPassPhraseDialog  file:$SERVER_ROOT/conf/password.conf
+
+NSSPassPhraseHelper $SERVER_ROOT/bin/nss_pcache
+
+NSSSessionCacheSize 10000
+NSSSessionCacheTimeout 100
+NSSSession3CacheTimeout 86400
+
+Listen 0.0.0.0:$SERVER_PORT
+Listen 0.0.0.0:8001
+
+LogLevel debug
+
+CoreDumpDirectory $SERVER_ROOT
+
+<VirtualHost *:$SERVER_PORT>
+
+    ServerName $SERVER_NAME
+    DocumentRoot $SERVER_ROOT/content
+
+    NSSSNI $SNI
+    NSSEngine on
+    NSSFIPS off
+    NSSOCSP off
+    NSSRenegotiation on
+
+    NSSCipherSuite +rsa_rc4_128_md5,+rsa_3des_sha,+rsa_des_sha,+rsa_aes_128_sha,+rsa_aes_256_sha
+
+    NSSProtocol SSLv3,TLSv1.0
+
+    NSSNickname Server-Cert
+
+    NSSCertificateDatabase $DBPREFIX$SERVER_ROOT/alias
+
+    NSSVerifyClient none
+
+    NSSUserName SSL_CLIENT_S_DN_UID
+
+    <Location "/rc4_cipher">
+        NSSCipherSuite +rsa_rc4_128_md5
+    </Location>
+
+    <Location "/openssl_rc4_cipher">
+        NSSCipherSuite RC4-SHA
+    </Location>
+
+    <Location "/openssl_aes_cipher">
+        # In openssl equivalent of AES:-ECDH:-ADH:-PSK:-DH
+        # In NSS equivalent of AES:-ECDH
+        NSSCipherSuite AES+RSA
+    </Location>
+
+    <Location "/dhe_cipher">
+        NSSCipherSuite +dhe_rsa_aes_128_sha
+    </Location>
+
+    <Location "/acl/aclS01.html">
+        NSSOptions +StdEnvVars +CompatEnvVars +ExportCertData
+        NSSVerifyClient require
+    </Location>
+
+    <Location "/acl/aclS02.html">
+        NSSOptions +StdEnvVars +CompatEnvVars +ExportCertData
+        NSSVerifyClient require
+        NSSRequire ( %{SSL_CLIENT_S_DN_UID} eq "alpha" \
+                   or %{SSL_CLIENT_S_DN_UID} eq "gamma" ) \
+                   and %{SSL_CLIENT_S_DN_O} eq "example.com" \
+                   and %{SSL_CLIENT_S_DN_OU} eq "People"
+    </Location>
+
+    <Location "/acl/aclS03.html">
+        NSSOptions +StdEnvVars +CompatEnvVars +ExportCertData +FakeBasicAuth
+        NSSVerifyClient require
+        AuthType Basic
+        AuthName Cert
+        AuthUserFile conf/htpasswd
+        Require valid-user
+    </Location>
+
+    <Location "/secret-test.html">
+        NSSRequire %{SSL_CIPHER_USEKEYSIZE} > 40
+    </Location>
+
+    <Location "/secret-test-impossible.html">
+        NSSRequire %{SSL_CIPHER_USEKEYSIZE} > 4000
+    </Location>
+
+    <Location "/protocolssl3">
+        NSSRequire %{SSL_PROTOCOL} eq "SSLv3"
+    </Location>
+
+    <Location "/protocoltls1">
+        NSSRequire %{SSL_PROTOCOL} eq "TLSv1"
+    </Location>
+
+    <Location "/protocoltls11">
+        NSSRequire %{SSL_PROTOCOL} eq "TLSv1.1"
+    </Location>
+
+    <Location "/protocoltls12">
+        NSSRequire %{SSL_PROTOCOL} eq "TLSv1.2"
+    </Location>
+
+    <Directory "$SERVER_ROOT/cgi-bin">
+        NSSOptions +ExportCertData +CompatEnvVars +StdEnvVars
+    </Directory>
+
+    NSSProxyEngine on
+    NSSProxyCipherSuite +rsa_rc4_128_md5,+rsa_3des_sha,+rsa_des_sha,+rsa_aes_128_sha,+rsa_aes_256_sha
+
+    NSSProxyProtocol TLSv1.0,TLSv1.2
+    ProxyPreserveHost $PRESERVEHOST
+    ProxyPass /proxy https://www1.example.com:8000/proxydata
+    ProxyPassReverse /proxy https://www1.example.com:8000/proxydata
+
+    ProxyPass /google https://www.google.com/
+    ProxyPassReverse /google https://www.google.com/
+
+</VirtualHost>
+
+#
+# For testing protocol handling
+#
+<VirtualHost *:8001>
+
+    ServerName $SERVER_NAME
+    DocumentRoot $SERVER_ROOT/content
+
+    NSSEngine on
+    NSSFIPS off
+    NSSOCSP off
+    NSSRenegotiation on
+
+    NSSCipherSuite +aes_128_sha_256,+aes_256_sha_256,+rsa_aes_128_gcm_sha_256
+
+    NSSProtocol TLSv1.2
+
+    NSSNickname Server-Cert
+
+    NSSVerifyClient none
+
+    # A bit redundant since the initial handshake should fail if no TLSv1.2
+    <Location "/protocoltls12">
+        NSSRequire %{SSL_PROTOCOL} eq "TLSv1.2"
+    </Location>
+
+    <Directory "$SERVER_ROOT/cgi-bin">
+        NSSOptions +ExportCertData +CompatEnvVars +StdEnvVars
+    </Directory>
+
+</VirtualHost>
+
+#
+# SNI testing. Requires that you add an entry like this to /etc/hosts:
+#
+# <your_IP>	www1.example.com
+#
+# 25 of these are needed
+#
+# Test with something like:
+# curl --cacert alias/ca.pem -v https://www1.example.com:8000/index.html
+#
+# Output should be something like: Basic index page for sni1
+#
+
+include conf.d/*

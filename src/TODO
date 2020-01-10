@@ -1,0 +1,2 @@
+- Once NSS fully supports the SNI TLS extension, add that.
+- Add support for OCSP stapling

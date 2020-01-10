@@ -1,0 +1,163 @@
+From 395280a1e87ce876f3a601c00a429e852bfc9f3b Mon Sep 17 00:00:00 2001
+From: Rob Crittenden <rcritten@redhat.com>
+Date: Wed, 23 Nov 2016 09:53:02 -0500
+Subject: [PATCH] Don't use same NSS db in nss_pcache as mod_nss, use
+ NSS_NoDB_Init()
+
+This is to avoid doing the wrapping within an HSM. There have been
+reports of disconnects which causes future mod_nss children to fail
+to spawn because the PIN cannot be retrieved.
+
+A side-effect is that nss_pcache is only used for storage now. It used
+to also verify that the PIN was correct since it had the NSS database
+with the token available.
+
+mod_nss will be responsible for validating the PIN which it already
+does.
+
+This move is also needed if mod_nss eventually moves to using
+NSS Contexts because multiple databases may be configured at once.
+---
+ docs/mod_nss.html |  4 ++--
+ nss_engine_init.c |  6 ++----
+ nss_pcache.c      | 34 ++++++----------------------------
+ nss_pcache.h      |  2 +-
+ 4 files changed, 11 insertions(+), 35 deletions(-)
+
+diff --git a/docs/mod_nss.html b/docs/mod_nss.html
+index 655d2f2..c3ae924 100644
+--- a/docs/mod_nss.html
++++ b/docs/mod_nss.html
+@@ -1811,7 +1811,7 @@ httpd.service - The Apache HTTP Server
+    Status: "Total requests: 0; Current requests/sec: 0; Current traffic:   0 B/sec"
+    CGroup: name=systemd:/system/httpd.service
+            |_____20807 /usr/sbin/httpd -DFOREGROUND
+-           |_____20808 /usr/libexec/nss_pcache 10027086 off /etc/httpd/alias
++           |_____20808 /usr/libexec/nss_pcache 10027086 off
+            |_____20809 /usr/sbin/httpd -DFOREGROUND
+            |_____20810 /usr/sbin/httpd -DFOREGROUND
+            |_____20811 /usr/sbin/httpd -DFOREGROUND
+@@ -1972,7 +1972,7 @@ httpd.service - The Apache HTTP Server
+    Status: "Total requests: 0; Current requests/sec: 0; Current traffic:   0 B/sec"
+    CGroup: name=systemd:/system/httpd.service
+            |_____21299 /usr/sbin/httpd -DFOREGROUND
+-           |_____21300 /usr/libexec/nss_pcache 10289231 on /etc/httpd/alias
++           |_____21300 /usr/libexec/nss_pcache 10289231 on
+            |_____21340 /usr/sbin/httpd -DFOREGROUND
+            |_____21341 /usr/sbin/httpd -DFOREGROUND
+            |_____21342 /usr/sbin/httpd -DFOREGROUND
+diff --git a/nss_engine_init.c b/nss_engine_init.c
+index 2571591..bf90994 100644
+--- a/nss_engine_init.c
++++ b/nss_engine_init.c
+@@ -582,7 +582,7 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
+ 
+     /* Do we need to fire up our password helper? */
+     if (mc->nInitCount == 1) {
+-        const char * child_argv[6];
++        const char * child_argv[4];
+         apr_status_t rv;
+         struct sembuf sb;
+         char sembuf[32];
+@@ -615,9 +615,7 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
+         child_argv[0] = mc->pphrase_dialog_helper;
+         child_argv[1] = sembuf;
+         child_argv[2] = fipsenabled ? "on" : "off";
+-        child_argv[3] = mc->pCertificateDatabase;
+-        child_argv[4] = mc->pDBPrefix;
+-        child_argv[5] = NULL;
++        child_argv[3] = NULL;
+ 
+         rv = apr_procattr_create(&mc->procattr, mc->pPool);
+ 
+diff --git a/nss_pcache.c b/nss_pcache.c
+index 5e98adb..d0e457b 100644
+--- a/nss_pcache.c
++++ b/nss_pcache.c
+@@ -131,7 +131,7 @@ void signalhandler(int signo) {
+  * CreatePk11PinStore
+  */
+ int
+-CreatePk11PinStore(Pk11PinStore **out, const char *tokenName, const char *pin)
++CreatePk11PinStore(Pk11PinStore **out, const char *pin)
+ {
+     int err = PIN_SUCCESS;
+     Pk11PinStore *store;
+@@ -146,29 +146,9 @@ CreatePk11PinStore(Pk11PinStore **out, const char *tokenName, const char *pin)
+         store->params = 0;
+         store->crypt = 0;
+ 
+-        /* Use the tokenName to find a PKCS11 slot */
+-        store->slot = PK11_FindSlotByName((char *)tokenName);
++        store->slot = PK11_GetInternalSlot();
+         if (store->slot == 0) { err = PIN_NOSUCHTOKEN; break; }
+ 
+-        /* Check the password/PIN.  This allows access to the token */
+-        {
+-            SECStatus rv = PK11_CheckUserPassword(store->slot, (char *)pin);
+-
+-            if (rv == SECSuccess)
+-                ;
+-            else if (rv == SECWouldBlock)
+-            {
+-                /* NSS returns a blocking error when the pin is wrong */
+-                err = PIN_INCORRECTPW;
+-                break;
+-            }
+-            else
+-            {
+-                err = PIN_SYSTEMERROR;
+-                break;
+-            }
+-        }
+-
+         /* Find the mechanism that this token can do */
+         {
+             const mech_item *tp;
+@@ -349,8 +329,8 @@ int main(int argc, char ** argv)
+     int fipsmode = 0;
+     union semun semarg;
+ 
+-    if (argc < 4 || argc > 5) {
+-        fprintf(stderr, "Usage: nss_pcache <semid> <fips on/off> <directory> [prefix]\n");
++    if (argc != 3) {
++        fprintf(stderr, "Usage: nss_pcache <semid> <fips on/off>\n");
+         exit(1);
+     }
+ 
+@@ -368,8 +348,7 @@ int main(int argc, char ** argv)
+     /* Set the PKCS #11 strings for the internal token. */
+     PK11_ConfigurePKCS11(NULL,NULL,NULL, INTERNAL_TOKEN_NAME, NULL, NULL,NULL,NULL,8,1);
+ 
+-    /* Initialize NSS and open the certificate database read-only. */
+-    rv = NSS_Initialize(argv[3], argc == 5 ? argv[4] : NULL, argc == 5 ? argv[4] : NULL, "secmod.db", NSS_INIT_READONLY);
++    rv = NSS_NoDB_Init(NULL);
+ 
+     if (rv != SECSuccess) {
+         fprintf(stderr, "Unable to initialize NSS database: %d\n", rv);
+@@ -436,8 +415,7 @@ int main(int argc, char ** argv)
+                         node->next = 0;
+ 
+                         if (err == PIN_SUCCESS)
+-                            err = CreatePk11PinStore(&node->store,
+-                                                     tokenName, tokenpw);
++                            err = CreatePk11PinStore(&node->store, tokenpw);
+                         memset(tokenpw, 0, strlen(tokenpw));
+                     }
+                 } else
+diff --git a/nss_pcache.h b/nss_pcache.h
+index 74cb19d..a0b8e62 100644
+--- a/nss_pcache.h
++++ b/nss_pcache.h
+@@ -21,7 +21,7 @@
+ 
+ typedef struct Pk11PinStore Pk11PinStore;
+ 
+-int CreatePk11PinStore(Pk11PinStore **out, const char *tokenName, const char *pin);
++int CreatePk11PinStore(Pk11PinStore **out, const char *pin);
+ 
+ int Pk11StoreGetPin(char **out, Pk11PinStore *store);
+ 
+-- 
+2.9.3
+
