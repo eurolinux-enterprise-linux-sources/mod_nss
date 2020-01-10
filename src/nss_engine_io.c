@@ -415,7 +415,7 @@ static apr_status_t nss_io_input_read(nspr_filter_in_ctx_t *inctx,
                 if (APR_STATUS_IS_EAGAIN(inctx->rc)
                         || APR_STATUS_IS_EINTR(inctx->rc)) {
                     /* Already read something, return APR_SUCCESS instead. */
-                    if (*len > 0) {
+                    if (*len > 0) { 
                         inctx->rc = APR_SUCCESS;
                         break;
                     }
@@ -458,7 +458,7 @@ static apr_status_t nss_io_input_getline(nspr_filter_in_ctx_t *inctx,
 
     while (tmplen > 0) {
         status = nss_io_input_read(inctx, buf + offset, &tmplen);
-
+     
         if (status != APR_SUCCESS) {
             return status;
         }
@@ -540,7 +540,7 @@ static apr_status_t nss_filter_write(ap_filter_t *f,
         char *reason = "reason unknown";
 
         ap_log_error(APLOG_MARK, APLOG_INFO, outctx->rc, c->base_server,
-                     "failed to write %ld of %ld bytes (%s)",
+                     "failed to write %d of %d bytes (%s)",
                      len - (apr_size_t)res, len, reason);
 
         outctx->rc = APR_EGENERAL;
@@ -551,13 +551,13 @@ static apr_status_t nss_filter_write(ap_filter_t *f,
 /* Just use a simple request.  Any request will work for this, because
  * we use a flag in the conn_rec->conn_vector now.  The fake request just
  * gets the request back to the Apache core so that a response can be sent.
- *
+ * 
  * To avoid calling back for more data from the socket, use an HTTP/0.9
  * request, and tack on an EOS bucket.
  */
 #define HTTP_ON_HTTPS_PORT \
     "GET /" CRLF
-
+ 
 #define HTTP_ON_HTTPS_PORT_BUCKET(alloc) \
     apr_bucket_immortal_create(HTTP_ON_HTTPS_PORT, \
                                sizeof(HTTP_ON_HTTPS_PORT) - 1, \
@@ -569,15 +569,15 @@ static void nss_io_filter_disable(SSLConnRec *sslconn, ap_filter_t *f)
     nspr_filter_in_ctx_t *inctx = f->ctx;
     sslconn->ssl = NULL;
     inctx->filter_ctx->pssl = NULL;
-}
+}   
 
 static apr_status_t nss_io_filter_error(ap_filter_t *f,
                                         apr_bucket_brigade *bb,
                                         apr_status_t status)
-{
+{   
     SSLConnRec *sslconn = myConnConfig(f->c);
     apr_bucket *bucket;
-
+    
     switch (status) {
       case HTTP_BAD_REQUEST:
             /* log the situation */
@@ -612,7 +612,7 @@ static apr_status_t nss_filter_io_shutdown(nss_filter_ctx_t *filter_ctx,
 {
     PRFileDesc *ssl = filter_ctx->pssl;
     SSLConnRec *sslconn = myConnConfig(c);
-
+     
     if (!ssl) {
         return APR_SUCCESS;
     }
@@ -621,21 +621,13 @@ static apr_status_t nss_filter_io_shutdown(nss_filter_ctx_t *filter_ctx,
     PR_Close(ssl);
 
     /* log the fact that we've closed the connection */
-#if AP_SERVER_MINORVERSION_NUMBER <= 2
-    if (c->base_server->loglevel >= APLOG_INFO) {
-#else
     if (c->base_server->log.level >= APLOG_INFO) {
-#endif
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, c->base_server,
                      "Connection to child %ld closed "
                      "(server %s, client %s)",
                      c->id,
                      nss_util_vhostid(c->pool, c->base_server),
-#if AP_SERVER_MINORVERSION_NUMBER <= 2
-                     c->remote_ip ? c->remote_ip : "unknown");
-#else
                      c->client_ip ? c->client_ip : "unknown");
-#endif
     }
 
     /* deallocate the SSL connection */
@@ -668,64 +660,6 @@ static apr_status_t nss_io_filter_cleanup(void *data)
 
         PR_Close(sslconn->ssl);
         sslconn->ssl = filter_ctx->pssl = NULL;
-    }
-
-    return APR_SUCCESS;
-}
-
-/*
- * This can't be done in a callback because of the way that mod_proxy
- * handles reuqests. It creates the connection, which for NSS
- * just generates a socket from the model, then it sets the proxy
- * hostname, then it writes the request. For NSS the writing of the
- * request is what generates the handshake but we don't have the
- * proxy hostname to set the SNI value for yet, so do it here.
- */
-static apr_status_t nss_io_filter_handshake(ap_filter_t *f)
-{
-    conn_rec *c         = f->c;
-    SSLConnRec *sslconn = myConnConfig(c);
-    SECStatus rv;
-
-    /*
-     * Enable SNI for proxy backend requests. Make sure we don't do it for
-     * pure SSLv3 connections, and also prevent IP addresses
-     * from being included in the SNI extension.
-     */
-    if (sslconn->is_proxy) {
-        char *name = SSL_RevealURL(sslconn->ssl);
-        const char *hostname_note;
-        SSLChannelInfo channel;
-        apr_ipsubnet_t *ip;
-
-        if (name) {
-            /* handshake is completed, SNI hostname already set */
-            PORT_Free(name);
-            return APR_SUCCESS;
-        }
-
-        hostname_note = apr_table_get(c->notes, "proxy-request-hostname");
-
-        if ((hostname_note) &&
-            (SSL_GetChannelInfo(sslconn->ssl, &channel, sizeof channel)
-                == SECSuccess) &&
-            (channel.protocolVersion != SSL_LIBRARY_VERSION_3_0) &&
-             apr_ipsubnet_create(&ip, hostname_note, NULL, c->pool)
-                != APR_SUCCESS)
-        {
-            if ((rv = SSL_SetURL(sslconn->ssl, hostname_note)) != SECSuccess) {
-                ap_log_error(APLOG_MARK, APLOG_INFO, 0, c->base_server,
-                    "Error setting SNI extension for SSL Proxy request: %d",
-                     PR_GetError());
-            } else {
-                ap_log_error(APLOG_MARK, APLOG_INFO, 0, c->base_server,
-                    "SNI extension for SSL Proxy request set to '%s'",
-                     hostname_note);
-            }
-        } else {
-            ap_log_error(APLOG_MARK, APLOG_INFO, 0, c->base_server,
-                "Can't set SNI extension: no hostname available");
-        }
     }
 
     return APR_SUCCESS;
@@ -765,10 +699,6 @@ static apr_status_t nss_io_filter_input(ap_filter_t *f,
 
     inctx->mode = mode;
     inctx->block = block;
-
-    if ((status = nss_io_filter_handshake(f)) != APR_SUCCESS) {
-        return nss_io_filter_error(f, bb, status);
-    }
 
     if (is_init) {
         /* protocol module needs to handshake before sending
@@ -891,10 +821,6 @@ static apr_status_t nss_io_filter_output(ap_filter_t *f,
     inctx->mode = AP_MODE_READBYTES;
     inctx->block = APR_BLOCK_READ;
 
-    if ((status = nss_io_filter_handshake(f)) != APR_SUCCESS) {
-        return nss_io_filter_error(f, bb, status);
-    }
-
     while (!APR_BRIGADE_EMPTY(bb)) {
         apr_bucket *bucket = APR_BRIGADE_FIRST(bb);
 
@@ -1003,14 +929,14 @@ struct modnss_buffer_ctx {
     apr_pool_t *pool;
 };
 
-int nss_io_buffer_fill(request_rec *r, apr_size_t maxlen)
+int nss_io_buffer_fill(request_rec *r)
 {
     conn_rec *c = r->connection;
     struct modnss_buffer_ctx *ctx;
     apr_bucket_brigade *tempb;
     apr_off_t total = 0; /* total length buffered */
     int eos = 0; /* non-zero once EOS is seen */
-
+    
     /* Create the context which will be passed to the input filter. */
     ctx = apr_palloc(r->pool, sizeof *ctx);
     apr_pool_create(&ctx->pool, r->pool);
@@ -1019,8 +945,7 @@ int nss_io_buffer_fill(request_rec *r, apr_size_t maxlen)
     /* ... and a temporary brigade. */
     tempb = apr_brigade_create(r->pool, c->bucket_alloc);
 
-    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "filling buffer, max size "
-                  "%" APR_SIZE_T_FMT " bytes", maxlen);
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "filling buffer");
 
     do {
         apr_status_t rv;
@@ -1038,10 +963,10 @@ int nss_io_buffer_fill(request_rec *r, apr_size_t maxlen)
                           "could not read request body for SSL buffer");
             return HTTP_INTERNAL_SERVER_ERROR;
         }
-
+        
         /* Iterate through the returned brigade: setaside each bucket
          * into the context's pool and move it into the brigade. */
-        for (e = APR_BRIGADE_FIRST(tempb);
+        for (e = APR_BRIGADE_FIRST(tempb); 
              e != APR_BRIGADE_SENTINEL(tempb) && !eos; e = next) {
             const char *data;
             apr_size_t len;
@@ -1059,27 +984,26 @@ int nss_io_buffer_fill(request_rec *r, apr_size_t maxlen)
                 }
                 total += len;
             }
-
+                
             rv = apr_bucket_setaside(e, ctx->pool);
             if (rv != APR_SUCCESS) {
                 ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                               "could not setaside bucket for SSL buffer");
                 return HTTP_INTERNAL_SERVER_ERROR;
             }
-
+            
             APR_BUCKET_REMOVE(e);
             APR_BRIGADE_INSERT_TAIL(ctx->bb, e);
         }
 
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, 
                       "total of %" APR_OFF_T_FMT " bytes in buffer, eos=%d",
                       total, eos);
 
         /* Fail if this exceeds the maximum buffer size. */
-        if (total > maxlen) {
+        if (total > SSL_MAX_IO_BUFFER) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
-                          "request body exceeds maximum size (%" APR_SIZE_T_FMT
-                          ") for SSL buffer", maxlen);
+                          "request body exceeds maximum size for SSL buffer");
             return HTTP_REQUEST_ENTITY_TOO_LARGE;
         }
 
@@ -1133,7 +1057,7 @@ static apr_status_t nss_io_filter_buffer(ap_filter_t *f,
             apr_bucket *d = APR_BRIGADE_FIRST(ctx->bb);
 
             e = APR_BUCKET_PREV(e);
-
+            
             /* Unsplice the partitioned segment and move it into the
              * passed-in brigade; no convenient way to do this with
              * the APR_BRIGADE_* macros. */
@@ -1158,7 +1082,7 @@ static apr_status_t nss_io_filter_buffer(ap_filter_t *f,
 
     if (APR_BRIGADE_EMPTY(ctx->bb)) {
         apr_bucket *e = APR_BRIGADE_LAST(bb);
-
+        
         /* Ensure that the brigade is terminated by an EOS if the
          * buffered request body has been entirely consumed. */
         if (e == APR_BRIGADE_SENTINEL(bb) || !APR_BUCKET_IS_EOS(e)) {
@@ -1219,9 +1143,9 @@ void nss_io_filter_init(conn_rec *c, PRFileDesc *ssl)
 void nss_io_filter_register(apr_pool_t *p)
 {
     ap_register_input_filter  (nss_io_filter, nss_io_filter_input,  NULL, AP_FTYPE_CONNECTION + 5);
-    ap_register_output_filter (nss_io_filter, nss_io_filter_output, NULL, AP_FTYPE_CONNECTION + 5);
+    ap_register_output_filter (nss_io_filter, nss_io_filter_output, NULL, AP_FTYPE_CONNECTION + 5);  
     ap_register_input_filter  (nss_io_buffer, nss_io_filter_buffer, NULL, AP_FTYPE_PROTOCOL - 1);
-    return;
+    return; 
 }
 
 PRFileDesc * nss_io_new_fd() {
@@ -1241,14 +1165,10 @@ static PRStatus PR_CALLBACK nspr_filter_getpeername(PRFileDesc *fd, PRNetAddr *a
     filter_ctx = (nss_filter_ctx_t *)(fd->secret);
     c = filter_ctx->c;
 
-#if AP_SERVER_MINORVERSION_NUMBER <= 2
-    return PR_StringToNetAddr(c->remote_ip, addr);
-#else
     return PR_StringToNetAddr(c->client_ip, addr);
-#endif
 }
 
-/*
+/* 
  * Translate NSPR PR_GetSocketOption() calls into apr_socket_opt_get() calls.
  */
 static PRStatus PR_CALLBACK nspr_filter_getsocketoption(PRFileDesc *fd, PRSocketOptionData *data) {
@@ -1277,7 +1197,6 @@ static PRStatus PR_CALLBACK nspr_filter_getsocketoption(PRFileDesc *fd, PRSocket
                 data->value.no_delay = (on == 1) ? PR_TRUE : PR_FALSE;
                 rv = PR_SUCCESS;
             }
-            break;
         case PR_SockOpt_Reuseaddr:
             if (apr_socket_opt_get(sslconn->client_socket, APR_SO_REUSEADDR, &on) == APR_SUCCESS) {
                 data->value.reuse_addr = (on == 1) ? PR_TRUE : PR_FALSE;
@@ -1310,7 +1229,7 @@ static PRStatus PR_CALLBACK nspr_filter_getsocketoption(PRFileDesc *fd, PRSocket
     return rv;
 }
 
-/*
+/* 
  * Translate NSPR PR_SetSocketOption() calls into apr_socket_opt_set() calls.
  */
 static PRStatus PR_CALLBACK nspr_filter_setsocketOption(PRFileDesc *fd, const PRSocketOptionData *data) {
@@ -1334,7 +1253,6 @@ static PRStatus PR_CALLBACK nspr_filter_setsocketOption(PRFileDesc *fd, const PR
             if (apr_socket_opt_set(sslconn->client_socket, APR_TCP_NODELAY, data->value.no_delay) == APR_SUCCESS) {
                 rv = PR_SUCCESS;
             }
-            break;
         case PR_SockOpt_Reuseaddr:
             if (apr_socket_opt_set(sslconn->client_socket, APR_SO_REUSEADDR, data->value.reuse_addr) == APR_SUCCESS) {
                 rv = PR_SUCCESS;
@@ -1372,7 +1290,7 @@ static PRStatus PR_CALLBACK nspr_filter_setsocketOption(PRFileDesc *fd, const PR
 }
 
 static PRStatus PR_CALLBACK
-nspr_filter_shutdown(PRFileDesc *fd, PRIntn how)
+nspr_filter_shutdown(PRFileDesc *fd, PRIntn how) 
 {
     return PR_SUCCESS;
 }
@@ -1393,7 +1311,7 @@ static PRInt32 PR_CALLBACK nspr_filter_send(PRFileDesc *fd, const void *buf, PRI
     return nspr_filter_out_write(fd, buf, amount);
 }
 
-/*
+/* 
  * Called once to initialize the NSPR layer that we push for each
  * request.
  */

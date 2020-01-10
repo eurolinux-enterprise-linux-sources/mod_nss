@@ -1,37 +1,13 @@
 from test_config import Declarative, write_template_file, restart_apache
 from test_config import stop_apache
-from variable import ENABLE_SERVER_DHE
 import ssl
 import requests.exceptions
 import os
 
-try:
-    # python3.2+
-    from ssl import CertificateError
-except ImportError:
-    try:
-        # Older python where the backport from pypi is installed
-        from backports.ssl_match_hostname import CertificateError
-    except ImportError:
-        # Other older python we use the urllib3 bundled copy
-        from urllib3.packages.ssl_match_hostname import CertificateError
-
 class test_suite1(Declarative):
     @classmethod
     def setUpClass(cls):
-        write_template_file('suite1.tmpl', 'work/httpd/conf/test.conf',
-            {'DBPREFIX': os.environ.get('DBPREFIX', ''),
-             'SNI': 'off',
-             'PRESERVEHOST': 'Off',
-            }
-        )
-        # Generate a single VH to do negative SNI testing
-        write_template_file('sni.tmpl', 'work/httpd/conf.d/sni1.conf',
-            {'DBPREFIX': os.environ.get('DBPREFIX', ''),
-             'SNINAME': 'www1.example.com',
-             'SNINUM': 1,
-            }
-        )
+        write_template_file('suite1.tmpl', 'work/httpd/conf/test.conf', {'DBPREFIX': os.environ.get('DBPREFIX', '')})
         restart_apache()
 
     @classmethod
@@ -56,7 +32,6 @@ class test_suite1(Declarative):
             desc='SSL connection, fail to verify',
             request=('/', {'verify': True}),
             expected=requests.exceptions.SSLError(),
-            expected_str='certificate verify failed',
         ),
 
         dict(
@@ -81,21 +56,15 @@ class test_suite1(Declarative):
         ),
 
         dict(
-            desc='client-side cipher check',
-            request=('/', {'ciphers': 'AES256-SHA'}),
+            desc='client-side RC4 cipher check',
+            request=('/', {'ciphers': 'RC4-MD5'}),
             expected=200,
-            cipher='AES256-SHA',
+            cipher='RC4-MD5',
         ),
 
         dict(
             desc='server-side OpenSSL-style RC4 cipher check',
             request=('/openssl_rc4_cipher/', {'ciphers': 'ALL'}),
-            expected=200,
-        ),
-
-        dict(
-            desc='server-side OpenSSL-style AES cipher check',
-            request=('/openssl_aes_cipher/', {'ciphers': 'AES128-SHA'}),
             expected=200,
         ),
 
@@ -160,15 +129,6 @@ class test_suite1(Declarative):
                       'cert_file': 'work/httpd/beta.crt',}
             ),
             expected=401,
-        ),
-
-        dict(
-            desc='FakeBasicAuth, certificate with colon',
-            request=('/acl/aclS03.html', {
-                      'key_file': 'work/httpd/colon.key',
-                      'cert_file': 'work/httpd/colon.crt',}
-            ),
-            expected=403,
         ),
 
         dict(
@@ -271,35 +231,4 @@ class test_suite1(Declarative):
             expected=requests.exceptions.SSLError(),
         ),
 
-        dict(
-            desc='Basic reverse proxy request',
-            request=('/google/', {}),
-            expected=200,
-        ),
-
-        dict(
-            desc='SNI request when SNI is disabled',
-            request=('/index.html',
-                    {'host': 'www1.example.com', 'port': 8000}
-            ),
-            expected=requests.exceptions.SSLError(),
-            expected_str='doesn\'t match',
-        ),
-
-        dict(
-            desc='Reverse proxy request when SNI is disabled',
-            request=('/proxy/index.html', {}),
-            expected=400,
-        ),
-
     ]
-
-    if ENABLE_SERVER_DHE:
-        tests.append(
-            dict(
-                desc='server-side DHE cipher check',
-                request=('/dhe_cipher/', {'ciphers': 'ALL'}),
-                expected=200,
-                cipher='DHE-RSA-AES128-SHA',
-            )
-        )

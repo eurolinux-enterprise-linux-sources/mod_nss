@@ -1,3 +1,5 @@
+VERSION = 1.0.11
+
 ## This is the shared library to be built
 lib_LTLIBRARIES = libmodnss.la
 
@@ -5,7 +7,8 @@ bin_PROGRAMS = nss_pcache test_cipher
 
 nss_pcache_SOURCES = nss_pcache.c
 
-test_cipher_SOURCES = test_cipher.c nss_engine_cipher.c
+test_cipher_SOURCES = test_cipher.c
+test_cipher_LDADD = .libs/nss_engine_cipher.o
 test_cipher_CFLAGS = $(AM_CFLAGS) $(CFLAGS) $(EXTRA_CPPFLAGS)
 
 man8_MANS =				\
@@ -21,7 +24,7 @@ libmodnss_la_SOURCES = mod_nss.c nss_engine_config.c nss_engine_init.c nss_engin
 libmodnss_la_LDFLAGS = -module -avoid-version
 
 ## Set the includes and libraries needed
-AM_CPPFLAGS = -I@apache_inc@ @nspr_inc@ @nss_inc@ @apr_inc@
+INCLUDES = -I@apache_inc@ @nspr_inc@ @nss_inc@ @apr_inc@
 LIBS = @nspr_lib@ @nss_lib@ -lssl3 -lsmime3 -lnss3 -lplc4 -lplds4 -lnspr4
 EXTRA_CPPFLAGS=@extra_cppflags@
 
@@ -101,24 +104,12 @@ check:
 	cd test;	\
 	rm -rf work;	\
 	nosetests -v test_cipher.py;	\
-	if [ `id -u` != 0 ]; then	\
-	./setup.sh -s 1;	\
+	./setup.sh;	\
 	nosetests -v test.py;	\
 	sleep 5;	\
 	rm -rf work;	\
-	./setup.sh -s 1 sql:;	\
+	./setup.sh sql:;	\
 	DBPREFIX=sql: nosetests -v test.py;	\
-	cd ..;	\
-	else	\
-	echo "Skipping live tests as they cannot be run as root";	\
-	fi
-
-checksni:
-	cd test;	\
-	rm -rf work;	\
-	./setup.sh -s 25;	\
-	nosetests -v testsni.py;	\
 	cd ..
-
 
 .PHONY: all test clean

@@ -45,7 +45,7 @@
 #include <sys/ipc.h>
 #include <sys/sem.h>
 
-#define MOD_NSS_VERSION PACKAGE_VERSION
+#define MOD_NSS_VERSION AP_SERVER_BASEREVISION
 
 /* NSPR headers */
 #include "nspr.h"
@@ -58,18 +58,6 @@
 #include <ssl.h>
 #include <nss.h>
 #include <sslproto.h>
-
-/* Apache ships its autoconf-generated config.h which defines these
- * as empty. We want the mod_nss version in our own config.h so
- * undefine them to eliminate the build warnings.
- */
-#undef PACKAGE_NAME
-#undef PACKAGE_VERSION
-#undef PACKAGE_STRING
-#undef PACKAGE_TARNAME
-#undef PACKAGE_URL
-#undef PACKAGE_BUGREPORT
-#include "config.h"
 
 /* The #ifdef macros are only defined AFTER including the above
  * therefore we cannot include these system files at the top  :-(
@@ -147,17 +135,12 @@ ap_set_module_config(c->conn_config, &nss_module, val)
 #define SSL_SESSION_CACHE_TIMEOUT  100
 #endif
 
-#ifndef SSL3_SESSION_CACHE_TIMEOUT
+#ifndef SSL3_SESSION_CACHE_TIMEOUT 
 #define SSL3_SESSION_CACHE_TIMEOUT  86400
 #endif
 
 #ifndef SSL_SESSION_CACHE_SIZE
 #define SSL_SESSION_CACHE_SIZE     10000
-#endif
-
-/* Default setting for per-dir reneg buffer. */
-#ifndef DEFAULT_RENEG_BUFFER_SIZE
-#define DEFAULT_RENEG_BUFFER_SIZE (128 * 1024)
 #endif
 
 /*
@@ -176,7 +159,7 @@ typedef int nss_opt_t;
 
 /*
  * Define the SSL requirement structure
- */
+ */ 
 typedef struct {
     char     *cpExpr;
     nss_expr *mpExpr;
@@ -221,7 +204,6 @@ typedef enum {
     SSL_PPTYPE_BUILTIN = 0,
     SSL_PPTYPE_FILE    = 1,
     SSL_PPTYPE_DEFER   = 2,
-    SSL_PPTYPE_FILTER  = 3,
 } nss_pphrase_t;
 
 /*
@@ -232,7 +214,7 @@ typedef enum {
 typedef struct {
     PRFileDesc *ssl;
     const char *client_dn;
-    CERTCertificate *client_cert;
+    CERTCertificate *client_cert; 
     int is_proxy;
     int disabled;
     int non_nss_request;
@@ -256,8 +238,6 @@ typedef struct {
     nss_pphrase_t   pphrase_dialog_type;
     const char     *pphrase_dialog_path;
     const char     *pphrase_dialog_helper;
-
-    BOOL             skip_permission_check;
 
     apr_proc_t      proc;
     apr_procattr_t *procattr;
@@ -285,7 +265,7 @@ typedef struct {
 
 typedef struct {
     SSLSrvConfigRec *sc; /* pointer back to server config */
-
+    
     char *cipherSuite;
 
     int as_server;
@@ -326,15 +306,12 @@ struct SSLSrvConfigRec {
     const char      *ocsp_name;
     BOOL             ocsp;
     BOOL             enabled;
-    BOOL             sni;
-    BOOL             strict_sni_vhost_check;
     BOOL             proxy_enabled;
     const char      *vhost_id;
     int              vhost_id_len;
     modnss_ctx_t    *server;
     modnss_ctx_t    *proxy;
     BOOL             proxy_ssl_check_peer_cn;
-    BOOL             session_tickets;
 };
 
 /*
@@ -351,16 +328,11 @@ typedef struct {
     const char         *szCipherSuite;
     nss_verify_t        nVerifyClient;
     const char         *szUserName;
-    apr_size_t          nRenegBufferSize;
 } SSLDirConfigRec;
 
 /*
  * for cipher definitions see nss_engine_cipher.h
  */
-
-/* pool and hash to store ServerName and NSSNickname pairs for SNI */
-apr_pool_t *mp;
-apr_hash_t *ht;
 
 /* Compatibility between Apache 2.0.x and 2.2.x. The numeric version of
  * the version first appeared in Apache 2.0.56-dev. I picked 2.0.55 as it
@@ -379,7 +351,7 @@ typedef struct regex_t ap_regex_t;
 #define AP_REG_NOSUB REG_NOSUB
 #define AP_REG_ICASE REG_ICASE
 #endif
-
+ 
 /*
  *  function prototypes
  */
@@ -394,8 +366,6 @@ void *nss_config_perdir_merge(apr_pool_t *p, void *basev, void *addv);
 void *nss_config_server_create(apr_pool_t *p, server_rec *s);
 void *nss_config_server_merge(apr_pool_t *p, void *basev, void *addv);
 const char *nss_cmd_NSSFIPS(cmd_parms *, void *, int);
-const char *nss_cmd_NSSSNI(cmd_parms *, void *, int);
-const char *nss_cmd_NSSStrictSNIVHostCheck(cmd_parms *, void *, int);
 const char *nss_cmd_NSSEngine(cmd_parms *, void *, int);
 const char *nss_cmd_NSSOCSP(cmd_parms *, void *, int);
 const char *nss_cmd_NSSOCSPDefaultResponder(cmd_parms *, void *, int);
@@ -421,17 +391,10 @@ const char *nss_cmd_NSSSessionCacheSize(cmd_parms *cmd, void *dcfg, const char *
 const char *nss_cmd_NSSPassPhraseDialog(cmd_parms *cmd, void *dcfg, const char *arg);
 const char *nss_cmd_NSSPassPhraseHelper(cmd_parms *cmd, void *dcfg, const char *arg);
 const char *nss_cmd_NSSRandomSeed(cmd_parms *, void *, const char *, const char *, const char *);
-const char *nss_cmd_NSSSkipPermissionCheck(cmd_parms *cmd, void *dcfg, int flag);
-const char *nss_cmd_NSSSessionTickets(cmd_parms *cmd, void *dcfg, int flag);
-#ifdef ENABLE_SERVER_DHE
-const char *nss_cmd_NSSServerDHE(cmd_parms *cmd, void *dcfg, int flag);
-#endif
 const char *nss_cmd_NSSUserName(cmd_parms *cmd, void *dcfg, const char *arg);
 const char *nss_cmd_NSSOptions(cmd_parms *, void *, const char *);
 const char *nss_cmd_NSSRequireSSL(cmd_parms *cmd, void *dcfg);
 const char  *nss_cmd_NSSRequire(cmd_parms *, void *, const char *);
-const char *nss_cmd_NSSRenegBufferSize(cmd_parms *cmd, void *dcfg, const char *arg);
-
 
 const char *nss_cmd_NSSProxyEngine(cmd_parms *cmd, void *dcfg, int flag);
 const char *nss_cmd_NSSProxyProtocol(cmd_parms *, void *, const char *);
@@ -462,7 +425,7 @@ void         nss_var_log_config_register(apr_pool_t *p);
 
 APR_DECLARE_OPTIONAL_FN(char *, nss_var_lookup,
                         (apr_pool_t *, server_rec *,
-                         conn_rec *, request_rec *,
+                         conn_rec *, request_rec *, 
                          char *));
 
 /* An optional function which returns non-zero if the given connection
@@ -490,12 +453,9 @@ apr_file_t  *nss_util_ppopen(server_rec *, apr_pool_t *, const char *,
 void         nss_util_ppclose(server_rec *, apr_pool_t *, apr_file_t *);
 char        *nss_util_readfilter(server_rec *, apr_pool_t *, const char *,
                                  const char * const *);
-char *searchHashVhostbyNick(char *vhost_id);
-char *searchHashVhostbyNick_match(char *vhost_id);
-void addHashVhostNick(char *vhost_id, char *nickname);
 /* ssl_io_buffer_fill fills the setaside buffering of the HTTP request
  * to allow an SSL renegotiation to take place. */
-int          nss_io_buffer_fill(request_rec *r, apr_size_t maxlen);
+int          nss_io_buffer_fill(request_rec *r);
 
 int nss_rand_seed(server_rec *s, apr_pool_t *p, ssl_rsctx_t nCtx, char *prefix);
 
@@ -503,21 +463,9 @@ int nss_rand_seed(server_rec *s, apr_pool_t *p, ssl_rsctx_t nCtx, char *prefix);
 SECStatus nss_Init_Tokens(server_rec *s);
 
 /* Logging */
-#if AP_SERVER_MINORVERSION_NUMBER <= 2
-void nss_log_nss_error(const char *file, int line, int level, server_rec *s);
-#else
 void nss_log_nss_error(const char *file, int line, int module_index, int level, server_rec *s);
-#endif
 void nss_die(void);
 
 /* NSS callback */
 SECStatus nss_AuthCertificate(void *arg, PRFileDesc *socket, PRBool checksig, PRBool isServer);
-
-/* Extract SAN extensions */
-void modnss_var_extract_san_entries(apr_table_t *t, PRFileDesc *ssl, apr_pool_t *p);
-void SECItem_StripTag(SECItem * item);
-const char * SECItem_to_ascii(apr_pool_t *p, SECItem *item);
-const char * SECItem_to_hex(apr_pool_t *p,const SECItem * item);
-const char * SECItem_to_ipaddr(apr_pool_t *p, SECItem *item);
-const char * SECItem_get_oid(apr_pool_t *p, SECItem *oid);
 #endif /* __MOD_NSS_H__ */

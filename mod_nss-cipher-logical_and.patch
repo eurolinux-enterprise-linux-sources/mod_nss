@@ -1,0 +1,875 @@
+From 63eb1f4c6ef8c1bb68afbfc5fba8762d50c1a0a8 Mon Sep 17 00:00:00 2001
+From: Rob Crittenden <rcritten@redhat.com>
+Date: Wed, 17 Jun 2015 11:12:40 -0400
+Subject: [PATCH] Fix logical AND support in OpenSSL cipher compatibility
+
+The + operator didn't perform properly at all. It is supposed
+to be used either for logical AND to combine two cipher suites
+or to move ciphers to the end of the list. Given that NSS
+doesn't support cipher ordering + is a no-op in this case.
+
+Also add in a slew of missing aliases: kRSA, aRSA, EDH,
+ECDH, kECDHe, kECDHr, kEECDH, aECDH, aNULL, AESGCM, AES128,
+AES256, CAMELLIA, CAMELLIA128, CAMELLIA256.
+
+Fix the definition of TLSv1.2.
+
+Define some ciphers as unimplemented in NSS.
+
+Renumber the mask/protocol/strength values to ensure uniqueness.
+
+Replace the existing cipher test to one that compares the output
+of the NSS-generated cipher string with the openssl generated
+string.  There are a lot of restrictions on the openssl string
+since so much isn't either implemented or needed for mod_nss.
+
+Add a new openssl-compatible cipher request test to the server
+tests.
+---
+ nss_engine_cipher.c    | 196 +++++++++++++++++++++++++++++++-------
+ nss_engine_cipher.h    |  61 ++++++------
+ test/createinstance.sh |   1 +
+ test/suite1.tmpl       |   6 ++
+ test/test.py           |   6 ++
+ test/test_cipher.py    | 254 ++++++++++++++++++++++++++++++++-----------------
+ test_cipher.c          |  32 +++++--
+ 7 files changed, 401 insertions(+), 155 deletions(-)
+
+diff --git a/nss_engine_cipher.c b/nss_engine_cipher.c
+index 9110d57..37ef338 100644
+--- a/nss_engine_cipher.c
++++ b/nss_engine_cipher.c
+@@ -29,10 +29,11 @@ cipher_properties ciphers_def[ciphernum] =
+     {"rsa_rc4_128_md5", TLS_RSA_WITH_RC4_128_MD5, "RC4-MD5", SSL_kRSA|SSL_aRSA|SSL_RC4|SSL_MD5, SSLV3, SSL_MEDIUM, 128, 128},
+     {"rsa_rc4_128_sha", TLS_RSA_WITH_RC4_128_SHA, "RC4-SHA", SSL_kRSA|SSL_aRSA|SSL_RC4|SSL_SHA1, SSLV3, SSL_MEDIUM, 128, 128},
+     {"rsa_rc2_40_md5", TLS_RSA_EXPORT_WITH_RC2_CBC_40_MD5, "EXP-RC2-CBC-MD5", SSL_kRSA|SSL_aRSA|SSL_RC2|SSL_MD5, SSLV3, SSL_EXPORT40, 40, 128},
++    /* TLS_RSA_EXPORT_WITH_DES40_CBC_SHA not implemented 0x0008 */
+     {"rsa_des_sha", TLS_RSA_WITH_DES_CBC_SHA, "DES-CBC-SHA", SSL_kRSA|SSL_aRSA|SSL_DES|SSL_SHA1, SSLV3, SSL_LOW, 56, 56},
+-    {"rsa_3des_sha", TLS_RSA_WITH_3DES_EDE_CBC_SHA, "DES-CBC3-SHA", SSL_kRSA|SSL_aRSA|SSL_3DES|SSL_SHA1, SSLV3, SSL_HIGH, 112, 168},
++    {"rsa_3des_sha", TLS_RSA_WITH_3DES_EDE_CBC_SHA, "DES-CBC3-SHA", SSL_kRSA|SSL_aRSA|SSL_3DES|SSL_SHA1, SSLV3, SSL_HIGH, 168, 168},
+     {"rsa_aes_128_sha", TLS_RSA_WITH_AES_128_CBC_SHA, "AES128-SHA", SSL_kRSA|SSL_aRSA|SSL_AES128|SSL_SHA1, TLSV1, SSL_HIGH, 128, 128},
+-    {"rsa_aes_256_sha", TLS_RSA_WITH_AES_256_CBC_SHA, "AES256-SHA256", SSL_kRSA|SSL_aRSA|SSL_AES256|SSL_SHA1, TLSV1, SSL_HIGH, 256, 256},
++    {"rsa_aes_256_sha", TLS_RSA_WITH_AES_256_CBC_SHA, "AES256-SHA", SSL_kRSA|SSL_aRSA|SSL_AES256|SSL_SHA1, TLSV1, SSL_HIGH, 256, 256},
+     {"null_sha_256", TLS_RSA_WITH_NULL_SHA256, "NULL-SHA256", SSL_kRSA|SSL_aRSA|SSL_eNULL|SSL_SHA256, TLSV1_2, SSL_STRONG_NONE, 0, 0},
+     {"aes_128_sha_256", TLS_RSA_WITH_AES_128_CBC_SHA256, "AES128-SHA256", SSL_kRSA|SSL_aRSA|SSL_AES128|SSL_SHA256, TLSV1_2, SSL_HIGH, 128, 128},
+     {"aes_256_sha_256", TLS_RSA_WITH_AES_256_CBC_SHA256, "AES256-SHA256", SSL_kRSA|SSL_aRSA|SSL_AES256|SSL_SHA256, TLSV1_2, SSL_HIGH, 256, 256},
+@@ -73,9 +74,25 @@ cipher_properties ciphers_def[ciphernum] =
+     {"ecdhe_rsa_aes_128_sha_256", TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256, "ECDHE-RSA-AES128-SHA256", SSL_kEECDH|SSL_aRSA|SSL_AES128|SSL_SHA256, TLSV1_2, SSL_HIGH, 128, 128},
+     {"ecdhe_ecdsa_aes_128_gcm_sha_256", TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, "ECDHE-ECDSA-AES128-GCM-SHA256", SSL_kEECDH|SSL_aECDSA|SSL_AES128GCM|SSL_AEAD, TLSV1_2, SSL_HIGH, 128, 128},
+     {"ecdhe_rsa_aes_128_gcm_sha_256", TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, "ECDHE-RSA-AES128-GCM-SHA256", SSL_kEECDH|SSL_aRSA|SSL_AES128GCM|SSL_AEAD, TLSV1_2, SSL_HIGH, 128, 128},
++    /* TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256 is not implemented */
++    /* TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256 is not implemented */
++    /* TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256 is not implemented */
++    /* TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256 is not implemented */
+ #endif
+ };
+ 
++
++/* Some ciphers are optionally enabled in OpenSSL. For safety sake assume
++ * they are not available.
++ */
++static int skip_ciphers = 4;
++static int ciphers_not_in_openssl[] = {
++    SSL_RSA_FIPS_WITH_DES_CBC_SHA,
++    SSL_RSA_FIPS_WITH_3DES_EDE_CBC_SHA,
++    TLS_RSA_EXPORT1024_WITH_DES_CBC_SHA,
++    TLS_RSA_EXPORT1024_WITH_RC4_56_SHA,
++};
++
+ static int parse_nss_ciphers(server_rec *s, char *ciphers, PRBool cipher_list[ciphernum]);
+ static int parse_openssl_ciphers(server_rec *s, char *ciphers, PRBool cipher_list[ciphernum]);
+ 
+@@ -107,19 +124,48 @@ int nss_parse_ciphers(server_rec *s, char *ciphers, PRBool cipher_list[ciphernum
+         rv = parse_nss_ciphers(s, ciphers, cipher_list);
+     } else {
+         rv = parse_openssl_ciphers(s, ciphers, cipher_list);
+-        if (0 == countciphers(cipher_list, SSLV3|TLSV1|TLSV1_2)) {
++        if (rv == 0 && 0 == countciphers(cipher_list, SSLV3|TLSV1|TLSV1_2)) {
+             rv = parse_nss_ciphers(s, ciphers, cipher_list);
+         }
+     }
++    if (0 == countciphers(cipher_list, SSLV3|TLSV1|TLSV1_2)) {
++        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
++                     "no cipher match");
++    }
+ 
+     return rv;
+ }
+ 
+ 
++/* Given a set of ciphers perform a given action on the indexed value.
++ * 
++ * This is needed because the + action doesn't do anything in the NSS
++ * context. In OpenSSL it will re-order the cipher list.
++ */
++static int set_cipher_value(PRBool cipher_list[ciphernum], int index, int action)
++{
++    int i;
++
++    for (i = 0; i < skip_ciphers; i++) {
++        if (ciphers_def[index].num == ciphers_not_in_openssl[i]) {
++            cipher_list[index] = -1;
++            return;
++        }
++    }
++
++    if (cipher_list[index] == -1) /* cipher is disabled */
++        return;
++    else
++        cipher_list[index] = action;
++}
++
++
+ static int parse_openssl_ciphers(server_rec *s, char *ciphers, PRBool cipher_list[ciphernum])
+ {
+     char * cipher;
+     int i, action;
++    PRBool merge = PR_FALSE;
++    PRBool found = PR_FALSE;
+ 
+     cipher = ciphers;
+     while (ciphers && (strlen(ciphers)))
+@@ -127,12 +173,12 @@ static int parse_openssl_ciphers(server_rec *s, char *ciphers, PRBool cipher_lis
+         while ((*cipher) && (isspace(*cipher)))
+             ++cipher;
+ 
+-        action = 1;
++        action = 1; /* default to enable */
+         switch(*cipher)
+         {
+             case '+': /* Add something */
+-                action = 1;
+-                cipher++;
++                /* Cipher ordering is not supported in NSS */
++                return 0;
+                 break;
+             case '-': /* Subtract something */
+                 action = 0;
+@@ -149,34 +195,58 @@ static int parse_openssl_ciphers(server_rec *s, char *ciphers, PRBool cipher_lis
+ 
+         if ((ciphers = strchr(cipher, ':'))) {
+             *ciphers++ = '\0';
++            merge = PR_FALSE;
++            found = PR_FALSE;
+         }
+ 
+         if (!strcmp(cipher, "ALL")) {
++            found = PR_TRUE;
+             for (i=0; i<ciphernum; i++) {
+                 if (!(ciphers_def[i].attr & SSL_eNULL))
+-                    if (cipher_list[i] != -1)
+-                        cipher_list[i] = action;
++                    set_cipher_value(cipher_list, i, action);
+             }
+         } else if (!strcmp(cipher, "COMPLEMENTOFALL")) {
++            found = PR_TRUE;
+             for (i=0; i<ciphernum; i++) {
+                 if ((ciphers_def[i].attr & SSL_eNULL))
+-                    if (cipher_list[i] != -1)
+-                        cipher_list[i] = action;
++                    set_cipher_value(cipher_list, i, action);
+             }
+         } else if (!strcmp(cipher, "DEFAULT")) {
++            found = PR_TRUE;
+             for (i=0; i < ciphernum; i++) {
+                 if (cipher_list[i] != -1)
+                     SSL_CipherPrefGetDefault(ciphers_def[i].num,
+                                              &cipher_list[i]);
+             }
++        } else if (!strcmp(cipher, "COMPLEMENTOFDEFAULT")) {
++            found = PR_TRUE;
++            /* no-op. In OpenSSL this is the ADH ciphers */
++        } else if (!strcmp(cipher, "@STRENGTH")) {
++            /* No cipher ordering in NSS */
++            ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
++                         "Cipher ordering is not supported in NSS");
++            return -1;
+         } else {
+             int mask = 0;
+             int strength = 0;
+             int protocol = 0;
+             char *c;
++            int i;
++            PRBool candidate_list[ciphernum];
++            PRBool temp_list[ciphernum];
++
++            for (i = 0; i < ciphernum; i++) {
++                candidate_list[i] = 1;
++            }
+ 
+             c = cipher;
+             while (c && (strlen(c))) {
++                mask = 0;
++                strength = 0;
++                protocol = 0;
++                for (i = 0; i < ciphernum; i++) {
++                    temp_list[i] = 0;
++                }
+ 
+                 if ((c = strchr(cipher, '+'))) {
+                     *c++ = '\0';
+@@ -184,12 +254,44 @@ static int parse_openssl_ciphers(server_rec *s, char *ciphers, PRBool cipher_lis
+ 
+                 if (!strcmp(cipher, "RSA")) {
+                     mask |= SSL_RSA;
++                } else if (!strcmp(cipher, "kRSA")) {
++                    mask |= SSL_kRSA;
++                } else if (!strcmp(cipher, "aRSA")) {
++                    mask |= SSL_aRSA;
+                 } else if (!strcmp(cipher, "EDH")) {
+                     mask |= SSL_EDH;
++#if 0
++                } else if (!strcmp(cipher, "ADH")) {
++                    mask |= SSL_ADH;
++#endif
++                } else if (!strcmp(cipher, "ECDH")) {
++                    mask |= SSL_ECDH;
++                } else if (!strcmp(cipher, "kECDHe")) {
++                    mask |= SSL_kECDHe;
++                } else if (!strcmp(cipher, "kECDHr")) {
++                    mask |= SSL_kECDHr;
++                } else if (!strcmp(cipher, "kEECDH")) {
++                    mask |= SSL_kEECDH;
++                } else if (!strcmp(cipher, "aECDH")) {
++                    mask |= SSL_aECDH;
+                 } else if ((!strcmp(cipher, "NULL")) || (!strcmp(cipher, "eNULL"))) {
+                     mask |= SSL_eNULL;
++                } else if (!strcmp(cipher, "aNULL")) {
++                    mask |= SSL_aNULL;
+                 } else if (!strcmp(cipher, "AES")) {
+                     mask |= SSL_AES;
++                } else if (!strcmp(cipher, "AESGCM")) {
++                    mask |= SSL_AES128GCM|SSL_AES256GCM;
++                } else if (!strcmp(cipher, "AES128")) {
++                    mask |= SSL_AES128|SSL_AES128GCM;
++                } else if (!strcmp(cipher, "AES256")) {
++                    mask |= SSL_AES256|SSL_AES256GCM;
++                } else if (!strcmp(cipher, "CAMELLIA")) {
++                    mask |= SSL_CAMELLIA128|SSL_CAMELLIA256;
++                } else if (!strcmp(cipher, "CAMELLIA128")) {
++                    mask |= SSL_CAMELLIA128;
++                } else if (!strcmp(cipher, "CAMELLIA256")) {
++                    mask |= SSL_CAMELLIA256;
+                 } else if (!strcmp(cipher, "3DES")) {
+                     mask |= SSL_3DES;
+                 } else if (!strcmp(cipher, "DES")) {
+@@ -210,7 +312,7 @@ static int parse_openssl_ciphers(server_rec *s, char *ciphers, PRBool cipher_lis
+                     protocol |= SSLV3;
+                 } else if (!strcmp(cipher, "TLSv1")) {
+                     protocol |= TLSV1;
+-                } else if (!strcmp(cipher, "TLSv12")) {
++                } else if (!strcmp(cipher, "TLSv1.2")) {
+                     protocol |= TLSV1_2;
+                 } else if (!strcmp(cipher, "HIGH")) {
+                     strength |= SSL_HIGH;
+@@ -229,32 +331,58 @@ static int parse_openssl_ciphers(server_rec *s, char *ciphers, PRBool cipher_lis
+                 if (c)
+                     cipher = c;
+ 
+-            } /* while */
+-
+-            /* If we have a mask, apply it. If not then perhaps they provided
+-             * a specific cipher to enable.
+-             */
+-            if (mask || strength || protocol)
+-                for (i=0; i<ciphernum; i++) {
+-                    if (((ciphers_def[i].attr & mask) ||
+-                     (ciphers_def[i].strength & strength) ||
+-                     (ciphers_def[i].version & protocol)) &&
+-                     (cipher_list[i] != -1)) {
+-                        /* Enable the NULL ciphers only if explicity
+-                         * requested */
+-                        if (ciphers_def[i].attr & SSL_eNULL) {
+-                            if (mask & SSL_eNULL)
+-                                cipher_list[i] = action;
+-                        } else
+-                            cipher_list[i] = action;
++                /* If we have a mask, apply it. If not then perhaps they
++                 * provided a specific cipher to enable.
++                 */
++                if (mask || strength || protocol) {
++                    merge = PR_TRUE;
++                    found = PR_TRUE;
++                    for (i=0; i<ciphernum; i++) {
++                        if (((ciphers_def[i].attr & mask) ||
++                         (ciphers_def[i].strength & strength) ||
++                         (ciphers_def[i].version & protocol)) &&
++                         (cipher_list[i] != -1)) {
++#if 0
++                            /* Enable the NULL ciphers only if explicity
++                             * requested */
++                            if (ciphers_def[i].attr & SSL_eNULL) {
++                                if (mask & SSL_eNULL)
++                                    temp_list[i] = 1;
++                            } else
++#endif
++                                temp_list[i] = 1;
++                            }
++                    }
++                    /* Merge the temp list into the candidate list */
++                    for (i=0; i<ciphernum; i++) {
++                        if (!(candidate_list[i] & temp_list[i])) {
++                            candidate_list[i] = 0;
++                        }
++                    }
++                } else if (!strcmp(cipher, "FIPS")) {
++                        SSLCipherSuiteInfo suite;
++                    for (i=0; i<ciphernum;i++) {
++                        if (SSL_GetCipherSuiteInfo(ciphers_def[i].num,
++                            &suite, sizeof suite) == SECSuccess) {
++                            if (suite.isFIPS)
++                                set_cipher_value(cipher_list, i, action);
++                        }
++                    }
++                } else {
++                    for (i=0; i<ciphernum; i++) {
++                        if (!strcmp(ciphers_def[i].openssl_name, cipher))
++                            set_cipher_value(cipher_list, i, action);
+                     }
+                 }
+-            else {
++            } /* while */
++            if (PR_TRUE == merge) {
++                /* Merge the candidate list into the cipher list */
+                 for (i=0; i<ciphernum; i++) {
+-                    if (!strcmp(ciphers_def[i].openssl_name, cipher) &&
+-                        cipher_list[i] != -1)
+-                        cipher_list[i] = action;
++                    if (candidate_list[i])
++                        set_cipher_value(cipher_list, i, action);
+                 }
++                merge = PR_FALSE;
++                found = PR_FALSE;
+             }
+         }
+ 
+@@ -262,6 +390,8 @@ static int parse_openssl_ciphers(server_rec *s, char *ciphers, PRBool cipher_lis
+             cipher = ciphers;
+ 
+     }
++    if (found && 0 == countciphers(cipher_list, SSLV3|TLSV1|TLSV1_2))
++        return 1; /* no matching ciphers */
+     return 0;
+ }
+ 
+diff --git a/nss_engine_cipher.h b/nss_engine_cipher.h
+index f0c12f1..2cd103b 100644
+--- a/nss_engine_cipher.h
++++ b/nss_engine_cipher.h
+@@ -29,27 +29,30 @@ typedef struct
+ } cipher_properties;
+ 
+ /* OpenSSL-compatible cipher attributes */
+-#define SSL_kRSA  0x00000001L
+-#define SSL_aRSA  0x00000002L
+-#define SSL_aDSS  0x00000004L
+-#define SSL_DSS   SSL_aDSS
+-#define SSL_eNULL 0x00000008L
+-#define SSL_DES   0x00000010L
+-#define SSL_3DES  0x00000020L
+-#define SSL_RC4   0x00000040L
+-#define SSL_RC2   0x00000080L
+-#define SSL_MD5   0x00000200L
+-#define SSL_SHA1  0x00000400L
+-#define SSL_SHA   SSL_SHA1
+-#define SSL_RSA   (SSL_kRSA|SSL_aRSA)
+-#define SSL_kEDH  0x00000800L
+-#define SSL_EDH   (SSL_kEDH)
+-#define SSL_aNULL 0x00001000L
+-#define SSL_kECDHe 0x00002000L
+-#define SSL_aECDH 0x00004000L
+-#define SSL_aECDSA 0x00008000L
+-#define SSL_kECDHr 0x00010000L
+-#define SSL_kEECDH 0x00020000L
++#define SSL_kRSA	0x00000001L
++#define SSL_aRSA	0x00000002L
++#define SSL_aDSS	0x00000004L
++#define SSL_DSS		SSL_aDSS
++#define SSL_eNULL	0x00000008L
++#define SSL_DES		0x00000010L
++#define SSL_3DES	0x00000020L
++#define SSL_RC4		0x00000040L
++#define SSL_RC2		0x00000080L
++#define SSL_MD5		0x00000200L
++#define SSL_SHA1	0x00000400L
++#define SSL_SHA		SSL_SHA1
++#define SSL_RSA		(SSL_kRSA)
++#define SSL_kEDH	0x00000800L
++#define SSL_EDH		(SSL_kEDH)
++#define SSL_aNULL	0x00001000L
++#define SSL_kECDHe	0x00002000L
++#define SSL_aECDH	0x00004000L
++#define SSL_aECDSA	0x00008000L
++#define SSL_kECDHr	0x00010000L
++#define SSL_kEECDH	0x00020000L
++#define SSL_ECDH	(SSL_kECDHe|SSL_kECDHr|SSL_kEECDH)
++#define SSL_EECDH	(SSL_kEECDH)
++#define SSL_ADH		(SSL_kEDH)
+ 
+ /* cipher strength */
+ #define SSL_STRONG_NONE   0x00000001L
+@@ -60,14 +63,14 @@ typedef struct
+ #define SSL_MEDIUM        0x00000020L
+ #define SSL_HIGH          0x00000040L
+ 
+-#define SSL_AES128        0x00004000L
+-#define SSL_AES256        0x00008000L
+-#define SSL_CAMELLIA128   0x00010000L
+-#define SSL_CAMELLIA256   0x00020000L
+-#define SSL_AES128GCM     0x00040000L
+-#define SSL_AES256GCM     0x00080000L
+-#define SSL_SHA256        0x00100000L
+-#define SSL_AEAD          0x00200000L
++#define SSL_AES128        0x00400000L
++#define SSL_AES256        0x00800000L
++#define SSL_CAMELLIA128   0x01000000L
++#define SSL_CAMELLIA256   0x02000000L
++#define SSL_AES128GCM     0x04000000L
++#define SSL_AES256GCM     0x08000000L
++#define SSL_SHA256        0x10000000L
++#define SSL_AEAD          0x20000000L
+ 
+ #define SSL_AES           (SSL_AES128|SSL_AES256|SSL_AES128GCM|SSL_AES256GCM)
+ #define SSL_CAMELLIA      (SSL_CAMELLIA128|SSL_CAMELLIA256)
+diff --git a/test/createinstance.sh b/test/createinstance.sh
+index c3b7260..9cdba62 100755
+--- a/test/createinstance.sh
++++ b/test/createinstance.sh
+@@ -25,6 +25,7 @@ mkdir lib
+ # Create the content
+ mkdir content/rc4_cipher
+ mkdir content/openssl_rc4_cipher
++mkdir content/openssl_aes_cipher
+ mkdir content/acl
+ mkdir content/protocolssl2
+ mkdir content/protocolssl3
+diff --git a/test/suite1.tmpl b/test/suite1.tmpl
+index eb2a16c..0f739a2 100644
+--- a/test/suite1.tmpl
++++ b/test/suite1.tmpl
+@@ -39,6 +39,12 @@ NSSUserName SSL_CLIENT_S_DN_UID
+     NSSCipherSuite RC4-SHA
+ </Location>
+ 
++<Location "/openssl_aes_cipher">
++    # In openssl equivalent of AES:-ECDH:-ADH:-PSK:-DH
++    # In NSS equivalent of AES:-ECDH
++    NSSCipherSuite AES+RSA
++</Location>
++
+ <Location "/acl/aclS01.html">
+     NSSOptions +StdEnvVars +CompatEnvVars +ExportCertData
+     NSSVerifyClient require
+diff --git a/test/test.py b/test/test.py
+index ee8d95b..23e093c 100644
+--- a/test/test.py
++++ b/test/test.py
+@@ -69,6 +69,12 @@ class test_suite1(Declarative):
+         ),
+ 
+         dict(
++            desc='server-side OpenSSL-style AES cipher check',
++            request=('/openssl_aes_cipher/', {'ciphers': 'AES128-SHA'}),
++            expected=200,
++        ),
++
++        dict(
+             desc='Basic client auth, no certificate',
+             request=('/acl/aclS01.html', {}),
+             expected=requests.exceptions.SSLError(),
+diff --git a/test/test_cipher.py b/test/test_cipher.py
+index 55989bd..a91f411 100644
+--- a/test/test_cipher.py
++++ b/test/test_cipher.py
+@@ -10,9 +10,50 @@ WITH_ECC=47
+ cwd = os.getcwd()
+ srcdir = os.path.dirname(cwd)
+ exe = "%s/test_cipher" % srcdir
++openssl = "/usr/bin/openssl"
+ 
+ ciphernum = 0
+ 
++CIPHERS_NOT_IN_NSS = ['ECDH-RSA-AES128-SHA256',
++                      'ECDH-ECDSA-AES128-GCM-SHA256',
++                      'ECDH-ECDSA-AES128-SHA256',
++                      'ECDH-RSA-AES128-GCM-SHA256',
++                      'EXP-DES-CBC-SHA',
++]
++
++def assert_equal_openssl(nss_ciphers, ossl_ciphers):
++    (nss, err, rc) = run([exe, "--o", nss_ciphers])
++    assert rc == 0
++    (ossl, err, rc) = run([openssl, "ciphers", ossl_ciphers])
++    assert rc == 0
++
++    nss_list = nss.strip().split(':')
++    nss_list.sort()
++
++    ossl_list = ossl.strip().split(':')
++    ossl_list = list(set(ossl_list))
++    ossl_list.sort()
++
++    # NSS doesn't support the SHA-384 ciphers, remove them from the OpenSSL
++    # output.
++    t = list()
++    for o in ossl_list:
++        if 'SHA384' in o:
++            continue
++        if o in CIPHERS_NOT_IN_NSS:
++            continue
++        t.append(o)
++    ossl_list = t
++
++    if len(nss_list) > len(ossl_list):
++        diff = set(nss_list) - set(ossl_list)
++    elif len(ossl_list) > len(nss_list):
++        diff = set(ossl_list) - set(nss_list)
++    else:
++        diff = ''
++
++    assert nss_list == ossl_list, '%r != %r. Difference %r' % (':'.join(nss_list), ':'.join(ossl_list), diff)
++
+ class test_ciphers(object):
+     @classmethod
+     def setUpClass(cls):
+@@ -20,131 +61,172 @@ class test_ciphers(object):
+         assert rc == 0
+         cls.ciphernum = int(out)
+ 
++    def test_RSA(self):
++        assert_equal_openssl("RSA", "RSA:-SSLv2:-SEED:-IDEA")
++
++    def test_kRSA(self):
++        assert_equal_openssl("kRSA", "kRSA:-SSLv2:-SEED:-IDEA")
++
++    def test_aRSA(self):
++        assert_equal_openssl("aRSA", "aRSA:-SSLv2:-SEED:-IDEA:-DH")
++
++    def test_EDH(self):
++        # No DH ciphers supported yet
++        (out, err, rc) = run([exe, "EDH"])
++        assert rc == 1
++
+     def test_RC4(self):
+-        (out, err, rc) = run([exe, "RC4"])
+-        assert rc == 0
+-        if self.ciphernum < WITH_ECC:
+-            assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc4_56_sha')
+-        else:
+-            assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc4_56_sha, ecdh_ecdsa_rc4_128_sha, ecdhe_ecdsa_rc4_128_sha, ecdh_rsa_128_sha, ecdhe_rsa_rc4_128_sha, ecdh_anon_rc4_128sha')
++        assert_equal_openssl("RC4", "RC4:-KRB5:-PSK:-ADH")
++
++    def test_RC2(self):
++        assert_equal_openssl("RC2", "RC2:-SSLv2:-KRB5")
+ 
+     def test_AES(self):
+-        (out, err, rc) = run([exe, "AES"])
+-        assert rc == 0
+-        if self.ciphernum < WITH_ECC:
+-            assert_equal(out, 'rsa_aes_128_sha, rsa_aes_256_sha, aes_128_sha_256, aes_256_sha_256, rsa_aes_128_gcm_sha_256')
+-        else:
+-            assert_equal(out, 'rsa_aes_128_sha, rsa_aes_256_sha, aes_128_sha_256, aes_256_sha_256, rsa_aes_128_gcm_sha_256, ecdh_ecdsa_rc4_128_sha, ecdh_ecdsa_3des_sha, ecdh_ecdsa_aes_128_sha, ecdh_ecdsa_aes_256_sha, ecdhe_ecdsa_rc4_128_sha, ecdhe_ecdsa_3des_sha, ecdhe_ecdsa_aes_128_sha, ecdhe_ecdsa_aes_256_sha, ecdh_rsa_128_sha, ecdh_rsa_3des_sha, ecdh_rsa_aes_128_sha, ecdh_rsa_aes_256_sha, ecdhe_rsa_aes_128_sha, ecdhe_rsa_aes_256_sha, ecdh_anon_aes_128_sha, ecdh_anon_aes_256_sha, ecdhe_ecdsa_aes_128_sha_256, ecdhe_rsa_aes_128_sha_256, ecdhe_ecdsa_aes_128_gcm_sha_256, ecdhe_rsa_aes_128_gcm_sha_256')
++        assert_equal_openssl("AES", "AES:-PSK:-ADH:-DSS:-DH")
+ 
++    def test_AESGCM(self):
++        assert_equal_openssl("AESGCM", "AESGCM:-PSK:-ADH:-DSS:-DH")
++
++    def test_AES128(self):
++        assert_equal_openssl("AES128", "AES128:-PSK:-ADH:-DSS:-DH")
++
++    def test_AES256(self):
++        assert_equal_openssl("AES256", "AES256:-PSK:-ADH:-DSS:-DH")
++
++    def test_CAMELLIA(self):
++        assert_equal_openssl("CAMELLIA", "CAMELLIA:-DH")
++
++    def test_CAMELLIA128(self):
++        assert_equal_openssl("CAMELLIA128", "CAMELLIA128:-DH")
++
++    def test_CAMELLIA256(self):
++        assert_equal_openssl("CAMELLIA256", "CAMELLIA256:-DH")
++
++    def test_3DES(self):
++        assert_equal_openssl("3DES", "3DES:-SSLv2:-PSK:-KRB5:-DH")
++
++    def test_DES(self):
++        assert_equal_openssl("DES", "DES:-SSLv2:-KRB5:-DH")
+ 
+     def test_ALL(self):
+-        (out, err, rc) = run([exe, "ALL"])
+-        assert rc == 0
+-        if self.ciphernum < WITH_ECC:
+-            'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc2_40_md5, rsa_des_sha, rsa_3des_sha, rsa_aes_128_sha, rsa_aes_256_sha, aes_128_sha_256, aes_256_sha_256, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, rsa_aes_128_gcm_sha_256'
+-        else:
+-            assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc2_40_md5, rsa_des_sha, rsa_3des_sha, rsa_aes_128_sha, rsa_aes_256_sha, aes_128_sha_256, aes_256_sha_256, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, rsa_aes_128_gcm_sha_256, fips_3des_sha, fips_des_sha, ecdh_ecdsa_rc4_128_sha, ecdh_ecdsa_3des_sha, ecdh_ecdsa_aes_128_sha, ecdh_ecdsa_aes_256_sha, ecdhe_ecdsa_rc4_128_sha, ecdhe_ecdsa_3des_sha, ecdhe_ecdsa_aes_128_sha, ecdhe_ecdsa_aes_256_sha, ecdh_rsa_128_sha, ecdh_rsa_3des_sha, ecdh_rsa_aes_128_sha, ecdh_rsa_aes_256_sha, ecdhe_rsa_rc4_128_sha, ecdhe_rsa_3des_sha, ecdhe_rsa_aes_128_sha, ecdhe_rsa_aes_256_sha, ecdh_anon_rc4_128sha, ecdh_anon_3des_sha, ecdh_anon_aes_128_sha, ecdh_anon_aes_256_sha, ecdhe_ecdsa_aes_128_sha_256, ecdhe_rsa_aes_128_sha_256, ecdhe_ecdsa_aes_128_gcm_sha_256, ecdhe_rsa_aes_128_gcm_sha_256')
++        assert_equal_openssl("ALL", "ALL:-SSLv2:-KRB5:-ADH:-DH:-DSS:-PSK:-SEED:-IDEA")
+ 
+     def test_ALL_no_AES(self):
+-        (out, err, rc) = run([exe, "ALL:-AES"])
+-        assert rc == 0
+-        if self.ciphernum < WITH_ECC:
+-            assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc2_40_md5, rsa_des_sha, rsa_3des_sha, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, fips_3des_sha, fips_des_sha')
+-        else:
+-            assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc2_40_md5, rsa_des_sha, rsa_3des_sha, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, fips_3des_sha, fips_des_sha, ecdhe_rsa_rc4_128_sha, ecdhe_rsa_3des_sha, ecdh_anon_rc4_128sha, ecdh_anon_3des_sha')
++        assert_equal_openssl("ALL:-AES", "ALL:-AES:-SSLv2:-KRB5:-ADH:-DH:-DSS:-PSK:-SEED:-IDEA")
++
++    def test_COMPLEMENTOFALL(self):
++        assert_equal_openssl("COMPLEMENTOFALL", "COMPLEMENTOFALL")
++
++    # skipping DEFAULT as we use the NSS defaults
++    # skipping COMPLEMENTOFDEFAULT as these are all ADH ciphers
+ 
+     def test_SSLv3(self):
+-        (out, err, rc) = run([exe, "SSLv3"])
+-        assert rc == 0
+-        if self.ciphernum < WITH_ECC:
+-            assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc2_40_md5, rsa_des_sha, rsa_3des_sha, rsa_aes_128_sha, rsa_aes_256_sha, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, fips_3des_sha, fips_des_sha')
+-        else:
+-            assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc2_40_md5, rsa_des_sha, rsa_3des_sha, rsa_aes_128_sha, rsa_aes_256_sha, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, fips_3des_sha, fips_des_sha, ecdh_ecdsa_rc4_128_sha, ecdh_ecdsa_3des_sha, ecdh_ecdsa_aes_128_sha, ecdh_ecdsa_aes_256_sha, ecdhe_ecdsa_rc4_128_sha, ecdhe_ecdsa_3des_sha, ecdhe_ecdsa_aes_128_sha, ecdhe_ecdsa_aes_256_sha, ecdh_rsa_128_sha, ecdh_rsa_3des_sha, ecdh_rsa_aes_128_sha, ecdh_rsa_aes_256_sha, ecdhe_rsa_rc4_128_sha, ecdhe_rsa_3des_sha, ecdhe_rsa_aes_128_sha, ecdhe_rsa_aes_256_sha, ecdh_anon_rc4_128sha, ecdh_anon_3des_sha, ecdh_anon_aes_128_sha, ecdh_anon_aes_256_sha')
++        assert_equal_openssl("SSLv3", "SSLv3:-KRB5:-PSK:-ADH:-EDH:-SEED:-IDEA")
+ 
+     def test_SSLv3_equals_TLSv1(self):
+-        (out, err, rc) = run([exe, "SSLv3"])
+-        (out2, err2, rc2) = run([exe, "TLSv1"])
++        (nss, err, rc) = run([exe, "--o", "SSLv3"])
++        (nss2, err, rc2) = run([exe, "--o", "TLSv1"])
+         assert rc == 0
+         assert rc2 == 0
+-        assert_equal(out, out2)
++        assert_equal(nss, nss2)
+ 
+     def test_TLSv12(self):
+-        if self.ciphernum < WITH_ECC:
+-            raise nose.SkipTest('ECC disabled')
+-        (out, err, rc) = run([exe, "TLSv12"])
+-        assert rc == 0
+-        assert_equal(out, 'aes_128_sha_256, aes_256_sha_256, rsa_aes_128_gcm_sha_256, ecdhe_ecdsa_aes_128_sha_256, ecdhe_rsa_aes_128_sha_256, ecdhe_ecdsa_aes_128_gcm_sha_256, ecdhe_rsa_aes_128_gcm_sha_256')
++        assert_equal_openssl("TLSv1.2", "TLSv1.2:TLSv1.2:-ADH:-DH:-DSS")
+ 
+     def test_NULL(self):
+-        (out, err, rc) = run([exe, "NULL"])
+-        assert rc == 0
+-        if self.ciphernum < WITH_ECC:
+-            assert_equal(out, 'rsa_null_md5, rsa_null_sha, null_sha_256')
+-        else:
+-            assert_equal(out, 'rsa_null_md5, rsa_null_sha, null_sha_256, ecdh_ecdsa_null_sha, ecdhe_ecdsa_null_sha, ecdh_rsa_null_sha, ecdhe_rsa_null, ecdh_anon_null_sha')
++        assert_equal_openssl("NULL", "NULL")
+ 
+     def test_nss_rsa_rc4_128(self):
++        # Test NSS cipher parsing
+         (out, err, rc) = run([exe, "+rsa_rc4_128_md5,+rsa_rc4_128_sha"])
+         assert rc == 0
+         assert_equal(out, 'rsa_rc4_128_md5, rsa_rc4_128_sha')
+ 
+-    def test_openssl_cipher(self):
+-        (out, err, rc) = run([exe, "DES-CBC3-SHA"])
+-        assert rc == 0
+-        assert_equal(out, 'rsa_3des_sha')
++    def test_EXP(self):
++        assert_equal_openssl("EXP", "EXP:-SSLv2:-DH:-KRB5")
+ 
+-    def test_openssl_cipherlist(self):
+-        (out, err, rc) = run([exe, "DES-CBC3-SHA:RC4-SHA"])
+-        assert rc == 0
+-        assert_equal(out, 'rsa_rc4_128_sha, rsa_3des_sha')
++    def test_EXPORT(self):
++        assert_equal_openssl("EXPORT", "EXPORT:-SSLv2:-DH:-KRB5")
+ 
+-    def test_EXP(self):
+-        (out, err, rc) = run([exe, "EXP"])
+-        assert rc == 0
+-        assert_equal(out, 'rsa_rc4_40_md5, rsa_rc2_40_md5, rsa_des_56_sha, rsa_rc4_56_sha')
++    def test_EXPORT40(self):
++        assert_equal_openssl("EXPORT40", "EXPORT40:-SSLv2:-ADH:-DH:-KRB5")
+ 
+     def test_MD5(self):
+-        (out, err, rc) = run([exe, "MD5"])
+-        assert rc == 0
+-        assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc2_40_md5')
++        assert_equal_openssl("MD5", "MD5:-SSLv2:-DH:-KRB5")
+ 
+     def test_SHA(self):
+-        (out, err, rc) = run([exe, "SHA"])
+-        assert rc == 0
+-        if self.ciphernum < WITH_ECC:
+-            assert_equal(out, 'rsa_rc4_128_sha, rsa_des_sha, rsa_3des_sha, rsa_aes_128_sha, rsa_aes_256_sha, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, fips_3des_sha, fips_des_sha')
+-        else:
+-            assert_equal(out, 'rsa_rc4_128_sha, rsa_des_sha, rsa_3des_sha, rsa_aes_128_sha, rsa_aes_256_sha, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, fips_3des_sha, fips_des_sha, ecdh_ecdsa_rc4_128_sha, ecdh_ecdsa_3des_sha, ecdh_ecdsa_aes_128_sha, ecdh_ecdsa_aes_256_sha, ecdhe_ecdsa_rc4_128_sha, ecdhe_ecdsa_3des_sha, ecdhe_ecdsa_aes_128_sha, ecdhe_ecdsa_aes_256_sha, ecdh_rsa_128_sha, ecdh_rsa_3des_sha, ecdh_rsa_aes_128_sha, ecdh_rsa_aes_256_sha, ecdhe_rsa_rc4_128_sha, ecdhe_rsa_3des_sha, ecdhe_rsa_aes_128_sha, ecdhe_rsa_aes_256_sha, ecdh_anon_rc4_128sha, ecdh_anon_3des_sha, ecdh_anon_aes_128_sha, ecdh_anon_aes_256_sha')
++        assert_equal_openssl("SHA", "SHA:-SSLv2:-DH:-KRB5:-PSK:-IDEA:-SEED")
++
++    def test_HIGH(self):
++        assert_equal_openssl("HIGH", "HIGH:-SSLv2:-DH:-ADH:-KRB5:-PSK")
++
++    def test_MEDIUM(self):
++        assert_equal_openssl("MEDIUM", "MEDIUM:-SSLv2:-ADH:-KRB5:-PSK:-SEED:-IDEA")
++
++    def test_LOW(self):
++        assert_equal_openssl("LOW", "LOW:-SSLv2:-DH:-ADH:-KRB5")
+ 
+     def test_SHA256(self):
+-        (out, err, rc) = run([exe, "SHA256"])
+-        assert rc == 0
+-        if self.ciphernum < WITH_ECC:
+-            assert_equal(out, 'aes_128_sha_256, aes_256_sha_256')
+-        else:
+-            assert_equal(out, 'aes_128_sha_256, aes_256_sha_256, ecdhe_ecdsa_aes_128_sha_256, ecdhe_rsa_aes_128_sha_256')
++        assert_equal_openssl("SHA256", "SHA256:-ADH:-DSS:-DH")
+ 
+     def test_SHA_MD5_minus_AES(self):
+-        (out, err, rc) = run([exe, "SHA:MD5:-AES"])
+-        assert rc == 0
+-        if self.ciphernum < WITH_ECC:
+-            assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc2_40_md5, rsa_des_sha, rsa_3des_sha, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, fips_3des_sha, fips_des_sha')
+-        else:
+-            assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc2_40_md5, rsa_des_sha, rsa_3des_sha, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, fips_3des_sha, fips_des_sha, ecdhe_rsa_rc4_128_sha, ecdhe_rsa_3des_sha, ecdh_anon_rc4_128sha, ecdh_anon_3des_sha')
++        assert_equal_openssl("SHA:MD5:-AES", "SHA:MD5:-AES:-SSLv2:-DH:-DSS:-KRB5:-SEED:-PSK:-IDEA")
+ 
+-    def test_SHA_MD5_not_AES_HIGH(self):
+-        (out, err, rc) = run([exe, "!AES:SHA:MD5"])
+-        assert rc == 0
+-        if self.ciphernum < WITH_ECC:
+-            assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc2_40_md5, rsa_des_sha, rsa_3des_sha, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, fips_3des_sha, fips_des_sha')
+-        else:
+-            assert_equal(out, 'rsa_rc4_40_md5, rsa_rc4_128_md5, rsa_rc4_128_sha, rsa_rc2_40_md5, rsa_des_sha, rsa_3des_sha, camelia_128_sha, rsa_des_56_sha, rsa_rc4_56_sha, camelia_256_sha, fips_3des_sha, fips_des_sha, ecdhe_rsa_rc4_128_sha, ecdhe_rsa_3des_sha, ecdh_anon_rc4_128sha, ecdh_anon_3des_sha')
++    def test_SHA_MD5_not_AES(self):
++        assert_equal_openssl("!AES:SHA:MD5", "!AES:SHA:MD5:-SSLv2:-DH:-KRB5:-DSS:-SEED:-PSK:-IDEA")
++
++    def test_aECDH(self):
++        assert_equal_openssl("aECDH", "aECDH")
++
++    def test_kECDHe(self):
++        assert_equal_openssl("kECDHe", "kECDHe")
++
++    def test_kECDHr(self):
++        assert_equal_openssl("kECDHr", "kECDHr")
++
++    def test_kEECDH(self):
++        assert_equal_openssl("kEECDH", "kEECDH")
++
++    def test_ECDH(self):
++        assert_equal_openssl("ECDH", "ECDH")
++
++    def test_AES_no_ECDH(self):
++        assert_equal_openssl("AES:-ECDH", "AES:-ECDH:-ADH:-PSK:-DH")
++        assert_equal_openssl("AES+RSA", "AES+RSA")
++
++    def test_logical_and_3DES_RSA(self):
++        assert_equal_openssl("3DES+RSA", "3DES+RSA:-SSLv2")
++
++    def test_logical_and_RSA_RC4(self):
++        assert_equal_openssl("RSA+RC4", "RSA+RC4:-SSLv2")
++
++    def test_logical_and_ECDH_SHA(self):
++        assert_equal_openssl("ECDH+SHA", "ECDH+SHA")
++
++    def test_logical_and_RSA_RC4_no_SHA(self):
++        assert_equal_openssl("RSA+RC4:!SHA", "RSA+RC4:-SSLv2:!SHA")
++
++    def test_additive_RSA_RC4(self):
++        assert_equal_openssl("RSA:+RC4", "RSA:+RC4:-SSLv2:-SEED:-IDEA")
++
++    def test_negative_plus_RSA_MD5(self):
++        assert_equal_openssl("-RC2:RSA+MD5", "-RC2:RSA+MD5:-SSLv2")
+ 
+     def test_nss_subtraction(self):
+         (out, err, rc) = run([exe, "+rsa_rc4_128_md5,+rsa_rc4_128_sha,-rsa_rc4_128_md5"])
+         assert rc == 0
+         assert_equal(out, 'rsa_rc4_128_sha')
+ 
++    def test_openssl_cipher(self):
++        (out, err, rc) = run([exe, "DES-CBC3-SHA"])
++        assert rc == 0
++        assert_equal(out, 'rsa_3des_sha')
++
++    def test_openssl_cipherlist(self):
++        (out, err, rc) = run([exe, "DES-CBC3-SHA:RC4-SHA"])
++        assert rc == 0
++        assert_equal(out, 'rsa_rc4_128_sha, rsa_3des_sha')
++
+     # As long as at least one is valid, things are ok
+     def test_nss_unknown(self):
+         (out, err, rc) = run([exe, "+rsa_rc4_128_md5,+unknown"])
+@@ -156,7 +238,9 @@ class test_ciphers(object):
+         assert rc == 0
+         assert_equal(out, 'aes_128_sha_256')
+ 
++    def test_openssl_single_cipher(self):
++        assert_equal_openssl("RC4-SHA", "RC4-SHA")
++
+     def test_invalid_format(self):
+         (out, err, rc) = run([exe, "none"])
+         assert rc == 1
+-        assert_equal(err, 'nss_engine_cipher.c:292, invalid cipher string none. Format is +cipher1,-cipher2...Unable to parse cipher list')
+diff --git a/test_cipher.c b/test_cipher.c
+index 91d112b..86a88d6 100644
+--- a/test_cipher.c
++++ b/test_cipher.c
+@@ -40,7 +40,7 @@ int ap_log_error_(const char *fn, int line, int module_index,
+ 
+     va_start(args, fmt);
+     vsprintf(out, fmt, args);
+-    fprintf(stderr,"%s:%d, %s", fn, line, out);
++    fprintf(stderr,"%s:%d, %s\n", fn, line, out);
+     va_end(args);
+ 
+     return 0;
+@@ -53,10 +53,11 @@ int main(int argc, char ** argv)
+     int rv=0;
+     int i;
+     char *ciphers;
++    PRBool openssl_output = PR_FALSE;
+     PRBool ciphers_list[ciphernum];
+ 
+-    if (argc != 2) {
+-        fprintf(stderr, "Usage: test_cipher [--count] <cipher_list>\n");
++    if (argc != 2 && argc != 3) {
++        fprintf(stderr, "Usage: test_cipher [--count] [--o] <cipher_list>\n");
+         exit(1);
+     }
+ 
+@@ -70,9 +71,14 @@ int main(int argc, char ** argv)
+         ciphers_list[i] = PR_FALSE;
+     }
+ 
+-    ciphers = strdup(argv[1]);
++    i = 1; /* index of ciphers */
++    if (!strcmp(argv[1], "--o")) {
++        openssl_output = PR_TRUE;
++        i = 2;
++    }
++
++    ciphers = strdup(argv[i]);
+     if (nss_parse_ciphers(NULL, ciphers, ciphers_list) < 0) {
+-        fprintf(stderr, "Unable to parse cipher list\n");
+         rv = 1;
+     }
+     free(ciphers);
+@@ -85,12 +91,22 @@ int main(int argc, char ** argv)
+         for (i = 0; i < ciphernum; i++)
+         {
+             if (ciphers_list[i] == 1) {
+-                strncat(output,  ciphers_def[i].name, sizeof(output));
+-                strncat(output,  ", ", sizeof(output));
++                if (openssl_output) {
++                    strncat(output,  ciphers_def[i].openssl_name, sizeof(output));
++                    strncat(output,  ":", sizeof(output));
++                } else {
++                    strncat(output,  ciphers_def[i].name, sizeof(output));
++                    strncat(output,  ", ", sizeof(output));
++                }
+             }
+         }
+-        output[strlen(output) - 2] = '\0';
++        if (openssl_output)
++            output[strlen(output) - 1] = '\0';
++        else
++            output[strlen(output) - 2] = '\0';
+         fprintf(stdout, "%s\n", output);
++    } else {
++        fprintf(stdout, "Unable to parse cipher list\n");
+     }
+ 
+     return rv;
+-- 
+1.9.3
+

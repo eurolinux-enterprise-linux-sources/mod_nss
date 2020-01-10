@@ -5,8 +5,8 @@
 %{!?_httpd_mmn: %{expand: %%global _httpd_mmn %%(cat %{_includedir}/httpd/.mmn 2>/dev/null || echo 0-0)}}
 
 Name: mod_nss
-Version: 1.0.14
-Release: 7%{?dist}
+Version: 1.0.11
+Release: 6%{?dist}
 Summary: SSL/TLS module for the Apache HTTP server
 Group: System Environment/Daemons
 License: ASL 2.0
@@ -23,7 +23,6 @@ BuildRequires: libtool
 BuildRequires: openssl
 BuildRequires: python-nose
 BuildRequires: python-requests
-BuildRequires: python-urllib3
 Requires: httpd-mmn = %{_httpd_mmn}
 Requires(post): httpd, nss-tools
 Requires: nss%{?_isa} >= 3.19.1
@@ -36,18 +35,19 @@ Requires: %{_libdir}/libnssckbi.so
 Patch1: mod_nss-conf.patch
 # Generate a password-less NSS database
 Patch2: mod_nss-gencert.patch
-# Set DEFAULT_SSL_CIPHER_LIST manually if pyopenssl can't be imported
-Patch3: mod_nss-defaultcipherlist.patch
-# Match the available ciphers in RHEL OpenSSL so tests pass
-Patch4: mod_nss-test-cipherlist.patch 
-# Disable and fix tests to work inside of brew
-Patch5: mod_nss-brewtest.patch
-# Remove setting 'r->user' in nss_hook_Fixup()
-Patch6: mod_nss-remove-r-user-from-hook-fixup.patch
-# Cleanup nss_pcache semaphore on shutdown
-Patch7: mod_nss-clean-semaphore.patch
-# Check certificate database directory permissions
-Patch8: mod_nss-certdb-permissions.patch
+Patch3: mod_nss-parallel-build.patch
+Patch4: mod_nss-doc-changes.patch
+Patch5: mod_nss-cipher-logical_and.patch
+# Disable some of the in-tree tests because TPS fails
+Patch6: mod_nss-makecheck.patch
+# Only enable a cipher if is the magic number 1
+Patch7: mod_nss-cipher-set.patch
+# Don't enable NULL ciphers for DEFAULT:aRSA
+Patch8: mod_nss-default-null.patch
+# Add openssl cipher macro EECDH
+Patch9: mod_nss-eecdh_cipher.patch
+# Add two new SHA384 ciphers in NSS
+Patch10: mod_nss-sha384_cipher.patch
 
 %description
 The mod_nss module provides strong cryptography for the Apache Web
@@ -59,12 +59,14 @@ security library.
 %setup -q
 %patch1 -p1 -b .conf
 %patch2 -p1 -b .gencert
-%patch3 -p1 -b .defaultcipherlist
-%patch4 -p1 -b .testcipherlist
-%patch5 -p1 -b .brewtest
-%patch6 -p1 -b .remove_r_user
-%patch7 -p1 -b .semaphore
-%patch8 -p1 -b .permissions
+%patch3 -p1
+%patch4 -p1
+%patch5 -p1
+%patch6 -p1
+%patch7 -p1
+%patch8 -p1
+%patch9 -p1
+%patch10 -p1
 
 # Touch expression parser sources to prevent regenerating it
 touch nss_expr_*.[chyl]
@@ -129,7 +131,7 @@ install -m 755 nss_pcache $RPM_BUILD_ROOT%{_libexecdir}/
 #
 ln -s %{_libexecdir}/nss_pcache $RPM_BUILD_ROOT%{_sbindir}/nss_pcache
 install -m 755 gencert $RPM_BUILD_ROOT%{_sbindir}/
-ln -s %{_libdir}/libnssckbi.so $RPM_BUILD_ROOT%{_sysconfdir}/httpd/alias/
+ln -s ../../../%{_libdir}/libnssckbi.so $RPM_BUILD_ROOT%{_sysconfdir}/httpd/alias/
 touch $RPM_BUILD_ROOT%{_sysconfdir}/httpd/alias/secmod.db
 touch $RPM_BUILD_ROOT%{_sysconfdir}/httpd/alias/cert8.db
 touch $RPM_BUILD_ROOT%{_sysconfdir}/httpd/alias/key3.db
@@ -179,43 +181,6 @@ fi
 %{_sbindir}/gencert
 
 %changelog
-* Wed Sep 21 2016 Rob Crittenden <rcritten@redhat.com> - 1.0.14-7
-- Add the permission patch to the repository (#1312583)
-
-* Wed Sep 21 2016 Rob Crittenden <rcritten@redhat.com> - 1.0.14-6
-- Check the NSS certificate database directory for read permissions
-  by the Apache user. (#1312583)
-
-* Wed Aug 10 2016 Rob Crittenden <rcritten@redhat.com> - 1.0.14-5
-- Update clean semaphore patch to not free the pinList twice.
-  (#1364560)
-
-* Tue Aug  9 2016 Rob Crittenden <rcritten@redhat.com> - 1.0.14-4
-- Update clean semaphore patch to not close pipe twice and to
-  shutdown NSS database (#1364560)
-
-* Mon Aug  8 2016 Rob Crittenden <rcritten@redhat.com> - 1.0.14-3
-- Clean up semaphore in nss_pcache on shutdown (#1364560)
-
-* Tue Jun 28 2016 Matthew Harmsen <mharmsen@redhat.com> - 1.0.14-2
-- mod_nss sets r->user in fixup even if it was long ago changed
-  by other module (#1347298)
-
-* Mon May 23 2016 Rob Crittenden <rcritten@redhat.com> - 1.0.14-1
-- Rebase to 1.0.14 (#1299063)
-- Add support for Server Name Indication (SNI) (#1053327)
-- Use upstream method to not execute live tests as root (#1256887)
-- Always call SSL_ShutdownServerSessionIDCache() in ModuleKill
-  (#1263301, #1296685)
-- Don't require NSSProxyNickname (#1280287)
-- Make link to libnssckbi.so an absolute link (#1288471)
-- Fail for colons in credentials with FakeBasicAuth (#1295970)
-- Don't ignore NSSProtocol when NSSFIPS is enabled (#1312491)
-- Check filesystem permissions on NSS database at startup (#1312583)
-- OpenSSL ciphers stopped parsing at +, CVE-2016-3099 (#1323913)
-- Patch to match available ciphers so tests pass (#1299063)
-- Patch to fix tests in brew (#1299063)
-
 * Tue Sep 22 2015 Rob Crittenden <rcritten@redhat.com> - 1.0.11-6
 - Add the supported NSS SHA384 ciphers (#1253570)
 - Add kECDH, AECDH, ECDSA and aECDSA macros (#1253570)

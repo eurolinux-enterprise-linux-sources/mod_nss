@@ -1,0 +1,12 @@
+diff -u --recursive mod_nss-1.0.11/nss_engine_init.c mod_nss-1.0.11.test/nss_engine_init.c
+--- mod_nss-1.0.11/nss_engine_init.c	2014-12-02 13:59:03.000000000 -0500
++++ mod_nss-1.0.11.test/nss_engine_init.c	2015-08-27 13:13:25.531530206 -0400
+@@ -977,7 +977,7 @@
+ 
+     /* Finally actually enable the selected ciphers */
+     for (i=0; i<ciphernum;i++) {
+-        SSL_CipherPrefSet(mctx->model, ciphers_def[i].num, cipher_state[i]);
++        SSL_CipherPrefSet(mctx->model, ciphers_def[i].num, cipher_state[i] == 1 ? PR_TRUE : PR_FALSE);
+     }
+ }
+ 

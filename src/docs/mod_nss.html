@@ -184,9 +184,7 @@ following line to httpd.conf (location relative to httpd.conf):<br>
 </code><br>
 This has Apache load the mod_nss configuration file, <code>nss.conf</code>.
 It is here that you will setup your VirtualServer entries to and
-configure your SSL servers. If you have a certificate with Subject
-Alternative Names then you can configure separate VirtualServer entries
-for eacon one.<br>
+configure your SSL servers.<br>
 
 <h1><a name="Generation"></a>Certificate Generation</h1>
 A ksh script, <code>gencert</code>, is included to automatically
@@ -255,8 +253,6 @@ To avoid being prompted for a startup password you can either:<br>
 <ul>
   <li>Use a password file that contains your token passwords. See
 NSSPassPhraseDialog for details.</li>
-  <li>Exec a program which provides the token password (either by
-asking the user or other means.</li>
   <li>Change the internal token password to a blank with:</li>
 </ul>
 <div style="margin-left: 40px;">
@@ -322,38 +318,10 @@ without user intervention. The format of this file is:<br>
 </div>
 <div style="margin-left: 80px;"><code>internal:secret12</code><br>
 </div>
-<ul>
-  <li><code>exec:/path/to/executable</code></li>
-</ul>
-<div style="margin-left: 40px;">The listed program will be executed.
-The only argument is the NSS token name to be authenticated.
-The return value of the program is ignored. Only what is printed on
-stdout is passed along as the password.
-</div>
-<br>
-<div style="margin-left: 40px;">A trivial example script is:<br>
-<br>
-</div>
-<div style="margin-left: 80px;"><code>
-#!/bin/sh<br>
-echo "secret123"
-</code><br>
-</div>
-<br>
-<div style="margin-left: 40px;">To prompt using systemd (as root):<br>
-<br>
-</div>
-<div style="margin-left: 80px;"><code>
-#!/bin/sh<br>
-exec /bin/systemd-ask-password "Enter SSL pass phrase for $1: "
-</code><br>
-</div>
 <br>
 <span style="font-weight: bold;">Example</span><br>
 <br>
 <code>NSSPassPhraseDialog builtin</code><br>
-<code>NSSPassPhraseDialog file:/etc/httpd/alias/password.conf</code><br>
-<code>NSSPassPhraseDialog exec:/usr/libexec/httpd/httpd-ssl-pass-dialog</code><br>
 <div style="margin-left: 80px;"><br>
 </div>
 <font size="+2">NSSPassPhraseHelper</font> <br>
@@ -430,7 +398,7 @@ Deprecated.<br>
 <br>
 <big><big>NSSSession3CacheTimeout<br>
 </big></big><br>
-Specifies the number of seconds SSLv3 sessions are cached.<br>
+Specifies the number of seconds SSL 3 sessions are cached.<br>
 <br>
 The valid range is 5 - 86400 seconds. A setting outside the valid
 range is silently constrained.<br>
@@ -470,18 +438,6 @@ reads that many bytes, otherwise it reads until the program exits.<br>
 NSSRandomSeed startup /dev/urandom 512<br>
 NSSRandomSeed startup /usr/bin/makerandom</code><br>
 <br>
-<big><big>NSSSkipPermissionCheck</big></big><br>
-<br>
-The NSS database will be checked to ensure that the user configured
-to run Apache as has owner or group read access to the database
-configured in <code>NSSCertificateDatabase</code>. This check
-can be disabled by setting <code>NSSSkipPermissionCheck</code>
-to <code>on</code>. The default is <code>off</code><br>
-<br>
-<span style="font-weight: bold;">Example</span><br>
-<br>
-<code>NSSSkipPermissionCheck on</code><br>
-<br>
 <big><big>NSSEngine</big></big><br>
 <br>
 Enables or disables the SSL protocol. This is usually used within a
@@ -497,7 +453,7 @@ Example</span><br>
 <br>
 Enables or disables FIPS 140 mode. This replaces the standard
 internal PKCS#11 module with a FIPS-enabled one. It also forces the
-enabled protocols to TLSv1.2, TLSv1.1 and TLSv1.0 and disables all ciphers
+enabled protocols to TLSv1.2, TLSv1.1 and TLS v1.0 and disables all ciphers
 but the FIPS ones. You may still select which ciphers you would like
 limited to those that are FIPS-certified. Any non-FIPS that are
 included in the NSSCipherSuite entry are automatically disabled.
@@ -564,7 +520,7 @@ If it contains neither then mod_nss first tries to apply OpenSSL ciphers then NS
 <br>
 All ciphers are disabled by default. <br>
 <br>
-Available RSA ciphers are:<br>
+Available ciphers are:<br>
 <br>
 <table style="width: 70%; text-align: left;" cellpadding="2" cellspacing="2" border="1">
   <tbody>
@@ -716,43 +672,6 @@ Available RSA ciphers are:<br>
 </tr>
 
   </tbody>
-</table>
-<br>The available server-side DHE ciphers are:<br>
-<br>
-<table style="width: 70%; text-align: left;" border="1" cellpadding="2" cellspacing="2">
-<tbody><tr><td style="vertical-align: top; font-weight: bold;">Cipher Name<br>
-      </td><td style="vertical-align: top; font-weight: bold;">NSS Cipher definition<br>
-      </td><td style="vertical-align: top; font-weight: bold;">Protocol<br>
-      </td></tr><tr><td style="vertical-align: top;">dhe_rsa_des_sha<br>
-      </td><td style="vertical-align: top;">TLS_DHE_RSA_WITH_DES_CBC_SHA<br>
-</td><td style="vertical-align: top;">SSLv3/TLSv1.0/TLSv1.1/TLSv1.2<br>
-      </td></tr><tr><td style="vertical-align: top;">dhe_rsa_3des_sha<br>
-      </td><td style="vertical-align: top;">TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA<br>
-      </td><td style="vertical-align: top;">TLSv1.0/TLSv1.1/TLSv1.2</td></tr><tr><td style="vertical-align: top;">dhe_rsa_aes_128_sha<br>
-      </td><td style="vertical-align: top;">TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA<br>
-      </td><td style="vertical-align: top;">TLSv1.0/TLSv1.1/TLSv1.2</td></tr><tr><td style="vertical-align: top;">dhe_rsa_aes_256_sha<br>
-      </td><td style="vertical-align: top;">TLS_DHE_RSA_WITH_AES_256_CBC_SHA<br>
-      </td><td style="vertical-align: top;">TLSv1.0/TLSv1.1/TLSv1.2</td></tr><tr><td style="vertical-align: top;">dhe_rsa_camellia_128_sha<br>
-</td><td style="vertical-align: top;">TLS_DHE_RSA_WITH_CAMELLIA_128_CBC_SHA<br>
-      </td><td style="vertical-align: top;">TLSv1.0/TLSv1.1/TLSv1.2</td></tr><tr><td style="vertical-align: top;">dhe_rsa_camellia_256_sha<br>
-</td><td style="vertical-align: top;">TLS_DHE_RSA_WITH_CAMELLIA_256_CBC_SHA<br>
-      </td><td style="vertical-align: top;">TLSv1.0/TLSv1.1/TLSv1.2</td></tr><tr><td style="vertical-align: top;">dhe_rsa_aes_128_sha256<br>
-</td><td style="vertical-align: top;">TLS_DHE_RSA_WITH_AES_128_CBC_SHA256<br>
-      </td><td style="vertical-align: top;">TLSv1.2</td></tr><tr>
-    <td valign="top">dhe_rsa_aes_256_sha256<br>
-    </td>
-    <td valign="top">TLS_DHE_RSA_WITH_AES_256_CBC_SHA256<br>
-    </td>
-    <td valign="top">TLSv1.2</td>
-  </tr>
-  <tr>
-    <td valign="top">dhe_rsa_aes_128_gcm_sha_256<br>
-    </td>
-    <td valign="top">TLS_DHE_RSA_WITH_AES_128_GCM_SHA256<br>
-    </td>
-    <td valign="top">TLSv1.2</td>
-  </tr>
-</tbody>
 </table>
 <br>
 Additionally there are a number of ECC ciphers:<br>
@@ -962,8 +881,8 @@ and the maximum allowed protocols based upon these entries allowing for the
 inclusion of every protocol in-between. For example, if only SSLv3 and TLSv1.1
 are specified, SSLv3, TLSv1.0, and TLSv1.1 will all be allowed, as NSS utilizes
 protocol ranges to accept all protocols inclusively
-(TLSv1.1 -&gt; TLSv1.0 -&gt; SSLv3.0), and does not allow exclusion of any protocols
-in the middle of a range (e. g. - TLSv1.0).<br>
+(TLS 1.1 -&gt; TLS 1.0 -&gt; SSL 3.0), and does not allow exclusion of any protocols
+in the middle of a range (e. g. - TLS 1.0).<br>
 <br>
 Finally, NSS will always automatically negotiate the use of the strongest
 possible protocol that has been specified which is acceptable to both sides of
@@ -1050,16 +969,6 @@ the entire certificate chain.<br>
 <br>
 <code>NSSVerifyClient require</code><br>
 <br>
-<big><big>NSSSessionTickets<br></big></big>
-<br>
-Enables or disables support for TLS Session tickets (RFC 5077).
-The default is off.<br>
-<br>
-<span style="font-weight: bold;">Example</span><br>
-<br>
-<big><big>NSSSessionTickets on<br>
-</big></big>
-<br>
 <big><big>NSSUserName<br>
 </big></big><br>
 Defines the field in the client certificate which will set the user
@@ -1124,45 +1033,6 @@ components of the client certificate, the remote IP address, etc.<br>
 <br>
 <code>NSSRequire<br>
 </code><br>
-<br>
-<big><big>NSSRenegBufferSize</big></big><br>
-<br>
-Configure the amount of memory that will be used for buffering the
-request body if a per-location SSL renegotiation is required due
-to changed access control requirements. The value is in bytes.
-The default is 128K.
-<br>
-If set to 0 then no buffering is done.
-<br><br>
-<span style="font-weight: bold;">Example</span><br>
-<br>
-<code>NSSRenegBufferSize 262144<br>
-</code><br>
-<br>
-<big><big>NSSSNI</big></big><br>
-<br>
-Enables or disables Server Name Identification (SNI) extension check for
-TLS. This option is enabled by default. To disable SNI, set this to off
-in the default name-based VirtualHost.
-<br>
-<br>
-<span style="font-weight: bold;">Example</span><br>
-<br>
-<code>NSSSNI off</code><br>
-<br>
-<big><big>NSSStrictSNIVHostCheck</big></big><br>
-<br>
-Configures whether a non-SNI client is allowed to access a name-based
-VirtualHost. If set to on in the default name-based VirtualHost
-then clients that are SNI unaware cannot access any virtual host. If set
-to on in any other VirtualHost then SNI unaware clients cannot access
-this particular virtual host.
-<br>
-<br>
-<span style="font-weight: bold;">Example</span><br>
-<br>
-<code>NSSStrictSNIVHostCheck off</code><br>
-<br>
 <big><big>NSSProxyEngine</big></big><br>
 <br>
 Enables or disables mod_nss HTTPS support for mod_proxy.<br>
@@ -1363,12 +1233,6 @@ certificate. Only those that exist in the certificate are created.<br>
       </td>
     </tr>
     <tr>
-      <td valign="top">SSL_CLIENT_SAN_[DNS, IPAddr, Email, OTHER_msUPN]_[0..n]<br>
-      </td>
-      <td valign="top">A subset of Subject Alternate Names. Each entry is appended with a unique sequential number.<br>
-      </td>
-    </tr>
-    <tr>
       <td style="vertical-align: top; width: 45%;"><code>SSL_CLIENT_I_DN<br>
       </code></td>
       <td style="vertical-align: top;">Distinguished Name (DN) of the
@@ -1436,11 +1300,6 @@ of the server key</td>
       <td style="vertical-align: top; width: 45%;"><code>SSL_SESSION_ID<br>
       </code></td>
       <td style="vertical-align: top;">SSL Session ID<br>
-      </td>
-    </tr><tr>
-      <td valign="top">SSL_SERVER_SAN_[DNS, IPAddr, Email, OTHER_msUPN]_[0..n]
-      </td>
-      <td valign="top">A subset of Subject Alternate Names. Each entry is appended with a unique sequential number.
       </td>
     </tr>
   </tbody>
@@ -1622,10 +1481,9 @@ certutil: certificate is valid</code><br>
 
 <h1><a name="SSLv2"></a>Why is SSLv2 disabled?</h1>
 All major browsers (Firefox, Internet Explorer, Mozilla, Netscape, Opera, and
-Safari) support SSLv3 and TLS so there is no need for a web server to support
-SSLv2. There are some known attacks against SSLv2 that are handled by
-SSLv3/TLS. SSLv2 also doesn't support useful features like client
-authentication.
+Safari) support SSL 3 and TLS so there is no need for a web server to support
+SSL 2. There are some known attacks against SSL 2 that are handled by SSL
+3/TLS. SSL2 also doesn't support useful features like client authentication.
 <br>
 
 <h1><a name="FAQ"></a>Frequently Asked Questions</h1>

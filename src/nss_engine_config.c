@@ -53,8 +53,6 @@ SSLModConfigRec *nss_config_global_create(server_rec *s)
     mc->pphrase_dialog_path         = NULL;
     mc->aRandSeed                   = apr_array_make(pool, 4,
                                                      sizeof(ssl_randseed_t));
-    mc->semid                       = 0;
-    mc->skip_permission_check       = PR_FALSE;
 
     apr_pool_userdata_set(mc, SSL_MOD_CONFIG_KEY,
                           apr_pool_cleanup_null,
@@ -128,7 +126,7 @@ static void modnss_ctx_init_server(SSLSrvConfigRec *sc,
 static SSLSrvConfigRec *nss_config_server_new(apr_pool_t *p)
 {
     SSLSrvConfigRec *sc = apr_palloc(p, sizeof(*sc));
-
+    
     sc->mc                          = NULL;
     sc->ocsp                        = UNSET;
     sc->ocsp_default                = UNSET;
@@ -136,15 +134,12 @@ static SSLSrvConfigRec *nss_config_server_new(apr_pool_t *p)
     sc->ocsp_name                   = NULL;
     sc->fips                        = UNSET;
     sc->enabled                     = UNSET;
-    sc->sni                         = TRUE;
-    sc->strict_sni_vhost_check      = TRUE;
     sc->proxy_enabled               = UNSET;
     sc->vhost_id                    = NULL;  /* set during module init */
     sc->vhost_id_len                = 0;     /* set during module init */
     sc->proxy                       = NULL;
     sc->server                      = NULL;
     sc->proxy_ssl_check_peer_cn     = TRUE;
-    sc->session_tickets             = FALSE;
 
     modnss_ctx_init_proxy(sc, p);
 
@@ -218,11 +213,8 @@ void *nss_config_server_merge(apr_pool_t *p, void *basev, void *addv) {
     cfgMerge(ocsp_name, NULL);
     cfgMergeBool(fips);
     cfgMergeBool(enabled);
-    cfgMergeBool(sni);
-    cfgMergeBool(strict_sni_vhost_check);
     cfgMergeBool(proxy_enabled);
     cfgMergeBool(proxy_ssl_check_peer_cn);
-    cfgMergeBool(session_tickets);
 
     modnss_ctx_cfg_merge_proxy(base->proxy, add->proxy, mrg->proxy);
 
@@ -248,17 +240,15 @@ void *nss_config_perdir_create(apr_pool_t *p, char *dir) {
 
     dc->szUserName    = NULL;
 
-    dc->nRenegBufferSize = UNSET;
-
     return dc;
 }
-
+ 
 const char *nss_cmd_NSSRequireSSL(cmd_parms *cmd, void *dcfg)
 {
     SSLDirConfigRec *dc = (SSLDirConfigRec *)dcfg;
 
     dc->bSSLRequired = TRUE;
-
+ 
     return NULL;
 }
 
@@ -278,23 +268,6 @@ const char *nss_cmd_NSSRequire(cmd_parms *cmd,
     require = apr_array_push(dc->aRequirement);
     require->cpExpr = apr_pstrdup(cmd->pool, arg);
     require->mpExpr = expr;
-
-    return NULL;
-}
-
-const char *nss_cmd_NSSRenegBufferSize(cmd_parms *cmd,
-                                       void *dcfg,
-                                       const char *arg)
-{
-    SSLDirConfigRec *dc = dcfg;
-    int val;
-
-    val = atoi(arg);
-    if (val < 0) {
-        return apr_pstrcat(cmd->pool, "Invalid size for NSSRenegBufferSize: ",
-                           arg, NULL);
-    }
-    dc->nRenegBufferSize = val;
 
     return NULL;
 }
@@ -326,8 +299,6 @@ void *nss_config_perdir_merge(apr_pool_t *p, void *basev, void *addv) {
 
     cfgMergeString(szUserName);
 
-    cfgMergeInt(nRenegBufferSize);
-
     return mrg;
 }
 
@@ -336,34 +307,16 @@ const char *nss_cmd_NSSEngine(cmd_parms *cmd, void *dcfg, int flag)
     SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
 
     sc->enabled = flag ? TRUE : FALSE;
-
+ 
     return NULL;
 }
 
 const char *nss_cmd_NSSFIPS(cmd_parms *cmd, void *dcfg, int flag)
 {
     SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
-
+    
     sc->fips = flag ? TRUE : FALSE;
-
-    return NULL;
-}
-
-const char *nss_cmd_NSSSNI(cmd_parms *cmd, void *dcfg, int flag)
-{
-    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
-
-    sc->sni = flag ? TRUE : FALSE;
-
-    return NULL;
-}
-
-const char *nss_cmd_NSSStrictSNIVHostCheck(cmd_parms *cmd, void *dcfg, int flag)
-{
-    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
-
-    sc->strict_sni_vhost_check = flag ? TRUE : FALSE;
-
+ 
     return NULL;
 }
 
@@ -523,7 +476,7 @@ const char *nss_cmd_NSSRenegotiation(cmd_parms *cmd, void *dcfg, int flag)
     SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
 
     sc->server->enablerenegotiation = flag ? PR_TRUE : PR_FALSE;
-
+ 
     return NULL;
 }
 
@@ -532,7 +485,7 @@ const char *nss_cmd_NSSRequireSafeNegotiation(cmd_parms *cmd, void *dcfg, int fl
     SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
 
     sc->server->requiresafenegotiation = flag ? PR_TRUE : PR_FALSE;
-
+ 
     return NULL;
 }
 #endif
@@ -553,12 +506,12 @@ const char *nss_cmd_NSSECCNickname(cmd_parms *cmd,
 const char *nss_cmd_NSSProxyEngine(cmd_parms *cmd, void *dcfg, int flag)
 {
     SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
-
+ 
     sc->proxy_enabled = flag ? TRUE : FALSE;
 
     return NULL;
 }
-
+ 
 const char *nss_cmd_NSSProxyProtocol(cmd_parms *cmd,
                                      void *dcfg,
                                      const char *arg)
@@ -575,12 +528,12 @@ const char *nss_cmd_NSSProxyCipherSuite(cmd_parms *cmd,
                                         const char *arg)
 {
     SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
-
+ 
     sc->proxy->auth.cipher_suite = arg;
-
+ 
     return NULL;
 }
-
+ 
 const char *nss_cmd_NSSProxyNickname(cmd_parms *cmd,
                                 void *dcfg,
                                 const char *arg)
@@ -608,7 +561,7 @@ const char *nss_cmd_NSSEnforceValidCerts(cmd_parms *cmd,
     SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
 
     sc->server->enforce = flag ? PR_TRUE : PR_FALSE;
-
+ 
     return NULL;
 }
 
@@ -692,27 +645,7 @@ const char *nss_cmd_NSSPassPhraseDialog(cmd_parms *cmd,
                                "' does not exist", NULL);
         }
     }
-    else if ((arglen > 5) && strEQn(arg, "exec:", 5)) {
-        apr_finfo_t finfo;
-        apr_status_t rc;
 
-        mc->pphrase_dialog_type  = SSL_PPTYPE_FILTER;
-        mc->pphrase_dialog_path =
-            ap_server_root_relative(cmd->pool, arg+5);
-        if (!mc->pphrase_dialog_path) {
-            return apr_pstrcat(cmd->pool,
-                               "Invalid NSSPassPhraseDialog exec: path ",
-                               arg+5, NULL);
-        }
-        rc = apr_stat(&finfo, mc->pphrase_dialog_path,
-             APR_FINFO_TYPE|APR_FINFO_SIZE, cmd->pool);
-        if ((rc != APR_SUCCESS) || (finfo.filetype != APR_REG)) {
-            return apr_pstrcat(cmd->pool,
-                               "NSSPassPhraseDialog: file '",
-                               mc->pphrase_dialog_path,
-                               "' does not exist", NULL);
-        }
-    }
     return NULL;
 }
 
@@ -738,16 +671,16 @@ const char *nss_cmd_NSSRandomSeed(cmd_parms *cmd,
                                   const char *arg1,
                                   const char *arg2,
                                   const char *arg3)
-{
+{   
     SSLModConfigRec *mc = myModConfig(cmd->server);
     const char *err;
     ssl_randseed_t *seed;
     int arg2len = strlen(arg2);
-
+    
     if ((err = ap_check_cmd_context(cmd, GLOBAL_ONLY))) {
         return err;
     }
-
+    
     /* Only run through this once. Otherwise the random seed sources are
      * pushed into the array for each server start (and we are guaranteed 2) */
     if (mc->nInitCount >= 1) {
@@ -824,24 +757,6 @@ const char *nss_cmd_NSSRandomSeed(cmd_parms *cmd,
     return NULL;
 }
 
-const char *nss_cmd_NSSSkipPermissionCheck(cmd_parms *cmd,
-                                           void *dcfg, int flag)
-{
-    SSLModConfigRec *mc = myModConfig(cmd->server);
-
-    mc->skip_permission_check = flag ? PR_TRUE: PR_FALSE;
-
-    return NULL;
-}
-
-const char *nss_cmd_NSSSessionTickets(cmd_parms *cmd,
-                                      void *dcfg, int flag)
-{
-    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
-    sc->session_tickets = flag ? PR_TRUE : PR_FALSE;
-    return NULL;
-}
-
 const char *nss_cmd_NSSUserName(cmd_parms *cmd, void *dcfg,
                                 const char *arg)
 {
@@ -855,10 +770,10 @@ const char *nss_cmd_NSSOptions(cmd_parms *cmd,
                                const char *arg)
 {
     SSLDirConfigRec *dc = (SSLDirConfigRec *)dcfg;
-    nss_opt_t opt;
-    int first = TRUE;
-    char action, *w;
-
+    nss_opt_t opt;   
+    int first = TRUE; 
+    char action, *w; 
+ 
     while (*arg) {
         w = ap_getword_conf(cmd->pool, &arg);
         action = NUL;

@@ -1,0 +1,85 @@
+diff -up --recursive mod_nss-1.0.11/nss_engine_cipher.c mod_nss-1.0.11.cipher/nss_engine_cipher.c
+--- mod_nss-1.0.11/nss_engine_cipher.c	2015-09-22 10:08:46.977756724 -0400
++++ mod_nss-1.0.11.cipher/nss_engine_cipher.c	2015-09-22 13:50:49.320055436 -0400
+@@ -42,6 +42,7 @@ cipher_properties ciphers_def[ciphernum]
+     {"rsa_rc4_56_sha", TLS_RSA_EXPORT1024_WITH_RC4_56_SHA, "EXP1024-RC4-SHA", SSL_kRSA|SSL_aRSA|SSL_RC4|SSL_SHA1, TLSV1, SSL_EXPORT56, 56, 128},
+     {"camelia_256_sha", TLS_RSA_WITH_CAMELLIA_256_CBC_SHA, "CAMELLIA256-SHA", SSL_kRSA|SSL_aRSA|SSL_CAMELLIA256|SSL_SHA1, TLSV1, SSL_HIGH, 256, 256},
+     {"rsa_aes_128_gcm_sha_256", TLS_RSA_WITH_AES_128_GCM_SHA256, "AES128-GCM-SHA256", SSL_kRSA|SSL_aRSA|SSL_AES128GCM|SSL_AEAD, TLSV1_2, SSL_HIGH, 128, 128},
++    {"rsa_aes_256_gcm_sha_384", TLS_RSA_WITH_AES_256_GCM_SHA384, "AES256-GCM-SHA384", SSL_kRSA|SSL_aRSA|SSL_AES256GCM|SSL_AEAD, TLSV1_2, SSL_HIGH, 256, 256},
+     {"fips_3des_sha", SSL_RSA_FIPS_WITH_3DES_EDE_CBC_SHA, "FIPS-DES-CBC3-SHA", SSL_kRSA|SSL_aRSA|SSL_3DES|SSL_SHA1, SSLV3, SSL_HIGH, 112, 168},
+     {"fips_des_sha", SSL_RSA_FIPS_WITH_DES_CBC_SHA, "FIPS-DES-CBC-SHA", SSL_kRSA|SSL_aRSA|SSL_DES|SSL_SHA1, SSLV3, SSL_LOW, 56, 56},
+ #ifdef NSS_ENABLE_ECC
+@@ -73,6 +74,10 @@ cipher_properties ciphers_def[ciphernum]
+     {"ecdhe_ecdsa_aes_128_sha_256", TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256, "ECDHE-ECDSA-AES128-SHA256", SSL_kEECDH|SSL_aECDSA|SSL_AES128|SSL_SHA256, TLSV1_2, SSL_HIGH, 128, 128},
+     {"ecdhe_rsa_aes_128_sha_256", TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256, "ECDHE-RSA-AES128-SHA256", SSL_kEECDH|SSL_aRSA|SSL_AES128|SSL_SHA256, TLSV1_2, SSL_HIGH, 128, 128},
+     {"ecdhe_ecdsa_aes_128_gcm_sha_256", TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, "ECDHE-ECDSA-AES128-GCM-SHA256", SSL_kEECDH|SSL_aECDSA|SSL_AES128GCM|SSL_AEAD, TLSV1_2, SSL_HIGH, 128, 128},
++    {"ecdhe_ecdsa_aes_256_sha_384", TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384, "ECDHE-ECDSA-AES256-SHA384", SSL_kEECDH|SSL_aECDSA|SSL_AES256|SSL_SHA384, TLSV1_2, SSL_HIGH, 256, 256},
++    {"ecdhe_rsa_aes_256_sha_384", TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384, "ECDHE-RSA-AES256-SHA384", SSL_kEECDH|SSL_aRSA|SSL_AES256|SSL_SHA384, TLSV1_2, SSL_HIGH, 256, 256},
++    {"ecdhe_ecdsa_aes_256_gcm_sha_384", TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, "ECDHE-ECDSA-AES256-GCM-SHA384", SSL_kEECDH|SSL_aECDSA|SSL_AES256GCM|SSL_AEAD, TLSV1_2, SSL_HIGH, 256, 256},
++    {"ecdhe_rsa_aes_256_gcm_sha_384", TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, "ECDHE-RSA-AES256-GCM-SHA384", SSL_kEECDH|SSL_aRSA|SSL_AES256GCM|SSL_AEAD, TLSV1_2, SSL_HIGH, 256, 256},
+     {"ecdhe_rsa_aes_128_gcm_sha_256", TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, "ECDHE-RSA-AES128-GCM-SHA256", SSL_kEECDH|SSL_aRSA|SSL_AES128GCM|SSL_AEAD, TLSV1_2, SSL_HIGH, 128, 128},
+     /* TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256 is not implemented */
+     /* TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256 is not implemented */
+@@ -323,6 +328,8 @@ static int parse_openssl_ciphers(server_
+                     mask |= SSL_SHA1;
+                 } else if (!strcmp(cipher, "SHA256")) {
+                     mask |= SSL_SHA256;
++                } else if (!strcmp(cipher, "SHA384")) {
++                    mask |= SSL_SHA384;
+                 } else if (!strcmp(cipher, "SSLv2")) {
+                     /* no-op */
+                 } else if (!strcmp(cipher, "SSLv3")) {
+diff -up --recursive mod_nss-1.0.11/nss_engine_cipher.h mod_nss-1.0.11.cipher/nss_engine_cipher.h
+--- mod_nss-1.0.11/nss_engine_cipher.h	2015-09-22 10:08:13.915509295 -0400
++++ mod_nss-1.0.11.cipher/nss_engine_cipher.h	2015-09-22 13:45:18.838532130 -0400
+@@ -70,7 +70,8 @@ typedef struct
+ #define SSL_AES128GCM     0x04000000L
+ #define SSL_AES256GCM     0x08000000L
+ #define SSL_SHA256        0x10000000L
+-#define SSL_AEAD          0x20000000L
++#define SSL_SHA384        0x20000000L
++#define SSL_AEAD          0x40000000L
+ 
+ #define SSL_AES           (SSL_AES128|SSL_AES256|SSL_AES128GCM|SSL_AES256GCM)
+ #define SSL_CAMELLIA      (SSL_CAMELLIA128|SSL_CAMELLIA256)
+@@ -83,9 +84,9 @@ typedef struct
+ 
+ /* the table itself is defined in nss_engine_cipher.c */
+ #ifdef NSS_ENABLE_ECC
+-#define ciphernum 49
++#define ciphernum 54
+ #else
+-#define ciphernum 20
++#define ciphernum 21
+ #endif
+ 
+ /* function prototypes */
+diff -up --recursive mod_nss-1.0.11/test/test_cipher.py mod_nss-1.0.11.cipher/test/test_cipher.py
+--- mod_nss-1.0.11/test/test_cipher.py	2015-09-22 10:08:46.977756724 -0400
++++ mod_nss-1.0.11.cipher/test/test_cipher.py	2015-09-22 13:50:05.214717202 -0400
+@@ -19,6 +19,10 @@ CIPHERS_NOT_IN_NSS = ['ECDH-RSA-AES128-S
+                       'ECDH-ECDSA-AES128-SHA256',
+                       'ECDH-RSA-AES128-GCM-SHA256',
+                       'EXP-DES-CBC-SHA',
++                      'ECDH-RSA-AES256-GCM-SHA384',
++                      'ECDH-ECDSA-AES256-SHA384',
++                      'ECDH-RSA-AES256-SHA384',
++                      'ECDH-ECDSA-AES256-GCM-SHA384',
+ ]
+ 
+ def assert_equal_openssl(nss_ciphers, ossl_ciphers):
+@@ -34,12 +38,10 @@ def assert_equal_openssl(nss_ciphers, os
+     ossl_list = list(set(ossl_list))
+     ossl_list.sort()
+ 
+-    # NSS doesn't support the SHA-384 ciphers, remove them from the OpenSSL
+-    # output.
++    # NSS doesn't support the all the same ciphers as OpenSSL. Remove
++    # the ones we know about from the OpenSSL output.
+     t = list()
+     for o in ossl_list:
+-        if 'SHA384' in o:
+-            continue
+         if o in CIPHERS_NOT_IN_NSS:
+             continue
+         t.append(o)

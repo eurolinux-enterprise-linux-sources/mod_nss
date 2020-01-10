@@ -211,11 +211,7 @@ CreatePk11PinStore(Pk11PinStore **out, const char *tokenName, const char *pin)
 
             ctx = PK11_CreateContextBySymKey(store->mech->type, CKA_ENCRYPT,
                     store->key, store->params);
-            if (!ctx) {
-                err = PIN_SYSTEMERROR;
-                free(plain);
-                break;
-            }
+            if (!ctx) { err = PIN_SYSTEMERROR; break; }
 
             do {
                 rv = PK11_CipherOp(ctx, store->crypt, &outLen, store->length,
@@ -335,10 +331,10 @@ int main(int argc, char ** argv)
 
     /* Initialize NSPR */
     PR_Init(PR_USER_THREAD, PR_PRIORITY_NORMAL, 256);
-
+ 
     /* Set the PKCS #11 strings for the internal token. */
     PK11_ConfigurePKCS11(NULL,NULL,NULL, INTERNAL_TOKEN_NAME, NULL, NULL,NULL,NULL,8,1);
-
+ 
     /* Initialize NSS and open the certificate database read-only. */
     rv = NSS_Initialize(argv[3], argc == 5 ? argv[4] : NULL, argc == 5 ? argv[4] : NULL, "secmod.db", NSS_INIT_READONLY);
 
@@ -360,13 +356,13 @@ int main(int argc, char ** argv)
                  exit(1);
             }
             PR_smprintf_free(internal_name);
-        }
+        } 
     }
 
     in = PR_GetSpecialFD(PR_StandardInput);
     out = PR_GetSpecialFD(PR_StandardOutput);
     if (in == NULL || out == NULL) {
-        fprintf(stderr, "PR_GetInheritedFD failed\n");
+        fprintf(stderr, "PR_GetInheritedFD failed\n"); 
         exit(1);
     }
 
@@ -387,6 +383,8 @@ int main(int argc, char ** argv)
                 break;
             }
             command = getstr(buf, 0);
+            tokenName = getstr(buf, 1);
+            tokenpw = getstr(buf, 2);
 
             if (command && !strcmp(command, "QUIT")) {
                 break;
@@ -394,23 +392,17 @@ int main(int argc, char ** argv)
                 PRInt32 err = PIN_SUCCESS;
                 Node *node = NULL;
 
-                tokenName = getstr(buf, 1);
-                tokenpw = getstr(buf, 2);
-
                 if (tokenName && tokenpw) {
                     node = (Node*)malloc(sizeof (Node));
-                    if (!node) {
-                        err = PIN_NOMEMORY;
-                    } else {
-                        node->tokenName = strdup(tokenName);
-                        node->store = 0;
-                        node->next = 0;
+                    if (!node) { err = PIN_NOMEMORY; }
 
-                        if (err == PIN_SUCCESS)
-                            err = CreatePk11PinStore(&node->store,
-                                                     tokenName, tokenpw);
-                        memset(tokenpw, 0, strlen(tokenpw));
-                    }
+                    node->tokenName = strdup(tokenName);
+                    node->store = 0; 
+                    node->next = 0; 
+
+                    if (err == PIN_SUCCESS)
+                        err = CreatePk11PinStore(&node->store, tokenName, tokenpw);
+                    memset(tokenpw, 0, strlen(tokenpw));
                 } else
                     err = PIN_SYSTEMERROR;
 
@@ -431,8 +423,6 @@ int main(int argc, char ** argv)
                 Node *node;
                 char *pin = 0;
                 PRBool found = PR_FALSE;
-
-                tokenName = getstr(buf, 1);
 
                 for (node = pinList; node != NULL; node = node->next) {
                     if (!strcmp(node->tokenName, tokenName)) {
@@ -469,7 +459,7 @@ int main(int argc, char ** argv)
     return 0;
 }
 
-/*
+/* 
  * Given a \t-deliminated string, pick out the el-th element
  */
 static
@@ -478,12 +468,7 @@ char * getstr(const char * cmd, int el) {
     char *peek;
     int i = 0;
 
-    if (cmd == NULL)
-        return NULL;
-
     work = strdup(cmd);
-    if (!work)
-        return NULL;
     s = t = work;
     r = NULL;
 

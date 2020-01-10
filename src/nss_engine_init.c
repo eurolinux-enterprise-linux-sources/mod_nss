@@ -16,26 +16,19 @@
 #include "mod_nss.h"
 #include "nss_engine_cipher.h"
 #include "apr_thread_proc.h"
-#include "apr_strings.h"
 #include "mpm_common.h"
-#if AP_SERVER_MINORVERSION_NUMBER <= 2
-#include "ap_mpm.h"
-#endif
 #include "secmod.h"
 #include "sslerr.h"
 #include "pk11func.h"
 #include "ocsp.h"
 #include "keyhi.h"
 #include "cert.h"
-#include <sys/types.h>
-#include <pwd.h>
 
 static SECStatus ownBadCertHandler(void *arg, PRFileDesc * socket);
 static SECStatus ownHandshakeCallback(PRFileDesc * socket, void *arg);
 static SECStatus NSSHandshakeCallback(PRFileDesc *socket, void *arg);
 static CERTCertificate* FindServerCertFromNickname(const char* name, const CERTCertList* clist);
 SECStatus nss_AuthCertificate(void *arg, PRFileDesc *socket, PRBool checksig, PRBool isServer);
-PRInt32 nssSSLSNISocketConfig(PRFileDesc *fd, const SECItem *sniNameArr, PRUint32 sniNameArrSize, void *arg);
 
 /*
  * Global variables defined in this file.
@@ -49,38 +42,12 @@ static char *version_components[] = {
     "SSL_VERSION_INTERFACE",
     "SSL_VERSION_LIBRARY",
     NULL
-};
-
-/* See if a uid or gid can read a file at a given path. Ignore world
- * read permissions.
- *
- * Return 0 on failure or file doesn't exist
- * Return 1 on success
- */
-static int check_path(uid_t uid, gid_t gid, char *filepath, apr_pool_t *p)
-{
-    apr_finfo_t finfo;
-    int rv;
-
-    if ((rv = apr_stat(&finfo, filepath, APR_FINFO_PROT | APR_FINFO_OWNER,
-         p)) == APR_SUCCESS) {
-        if (((uid == finfo.user) &&
-            ((finfo.protection & APR_FPROT_UREAD))) ||
-            ((gid == finfo.group) &&
-                ((finfo.protection & APR_FPROT_GREAD)))
-           )
-        {
-            return 1;
-        }
-        return 0;
-    }
-    return 0;
-}
+}; 
 
 static char *nss_add_version_component(apr_pool_t *p,
                                        server_rec *s,
                                        char *name)
-{
+{   
     char *val = nss_var_lookup(p, s, NULL, NULL, name);
 
     if (val && *val) {
@@ -89,7 +56,7 @@ static char *nss_add_version_component(apr_pool_t *p,
 
     return val;
 }
-
+ 
 static void nss_add_version_components(apr_pool_t *p,
                                        server_rec *s)
 {
@@ -112,17 +79,16 @@ static void nss_add_version_components(apr_pool_t *p,
  *  Initialize SSL library
  *
  */
-static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
+static void nss_init_SSLLibrary(server_rec *base_server)
 {
     SECStatus rv;
     SSLModConfigRec *mc = myModConfig(base_server);
-    SSLSrvConfigRec *sc;
+    SSLSrvConfigRec *sc; 
     char cwd[PATH_MAX];
     server_rec *s;
     int fipsenabled = FALSE;
     int ocspenabled = FALSE;
     int ocspdefault = FALSE;
-    int snienabled = FALSE;
     char *dbdir = NULL;
     const char * ocspurl = NULL;
     const char * ocspname = NULL;
@@ -152,72 +118,6 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
                     return;
             }
         }
-
-        if (sc->sni == TRUE) {
-            snienabled = TRUE;
-        }
-    }
-
-    /* Assuming everything is ok so far, check the cert database permissions
-     * for the server user before Apache starts forking. We die now or
-     * get stuck in an endless loop not able to read the NSS database.
-     */
-    if (mc->nInitCount == 1) {
-        if (mc->skip_permission_check == PR_FALSE) {
-            char filepath[1024];
-            struct passwd *pw = NULL;
-
-            pw = getpwnam(mc->user);
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, base_server,
-                "Checking permissions for user %s: uid %d gid %d",
-                mc->user, pw->pw_uid, pw->pw_gid);
-
-            if (strncasecmp(mc->pCertificateDatabase, "sql:", 4) == 0) {
-                apr_snprintf(filepath, 1024, "%s/key4.db",
-                             mc->pCertificateDatabase+4);
-                if (!(check_path(pw->pw_uid, pw->pw_gid, filepath, p))) {
-                    ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
-                        "Server user %s lacks read access to NSS key "
-                        "database %s.", mc->user, filepath);
-                    nss_die();
-                }
-                apr_snprintf(filepath, 1024, "%s/cert9.db",
-                             mc->pCertificateDatabase+4);
-                if (!(check_path(pw->pw_uid, pw->pw_gid, filepath, p))) {
-                    ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
-                        "Server user %s lacks read access to NSS cert "
-                        "database %s.", mc->user, filepath);
-                    nss_die();
-                }
-            } else {
-                apr_snprintf(filepath, 1024, "%s/key3.db",
-                             mc->pCertificateDatabase);
-                if (!(check_path(pw->pw_uid, pw->pw_gid, filepath, p))) {
-                    ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
-                        "Server user %s lacks read access to NSS key "
-                        "database %s.", mc->user, filepath);
-                    nss_die();
-                }
-                apr_snprintf(filepath, 1024, "%s/cert8.db",
-                             mc->pCertificateDatabase);
-                if (!(check_path(pw->pw_uid, pw->pw_gid, filepath, p))) {
-                    ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
-                        "Server user %s lacks read access to NSS cert "
-                        "database %s.", mc->user, filepath);
-                    nss_die();
-                }
-                apr_snprintf(filepath, 1024, "%s/secmod.db",
-                             mc->pCertificateDatabase);
-                if (!(check_path(pw->pw_uid, pw->pw_gid, filepath, p))) {
-                    ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
-                        "Server user %s lacks read access to NSS secmod "
-                        "database %s.", mc->user, filepath);
-                    nss_die();
-                }
-            }
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, base_server,
-                "Permissions check out ok");
-        }
     }
 
     /* We need to be in the same directory as libnssckbi.so to load the
@@ -233,43 +133,37 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
     }
     if (strncasecmp(mc->pCertificateDatabase, "sql:", 4) == 0)
         dbdir = (char *)mc->pCertificateDatabase + 4;
-    else
+    else 
         dbdir = (char *)mc->pCertificateDatabase;
     if (chdir(dbdir) != 0) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
             "Unable to change directory to %s", mc->pCertificateDatabase);
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
-            "Does the directory exist and do the permissions allow access?");
         if (mc->nInitCount == 1)
             nss_die();
         else
             return;
     }
-
     /* Initialize NSS and open the certificate database read-only. */
     rv = NSS_Initialize(mc->pCertificateDatabase, mc->pDBPrefix, mc->pDBPrefix, "secmod.db", NSS_INIT_READONLY);
     if (chdir(cwd) != 0) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
             "Unable to change directory to %s", cwd);
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
-            "Does the directory exist and do the permissions allow access?");
         if (mc->nInitCount == 1)
             nss_die();
         else
             return;
     }
 
+    /* Assuming everything is ok so far, check the cert database password(s). */
     if (rv != SECSuccess) {
         NSS_Shutdown();
-
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
             "NSS_Initialize failed. Certificate database: %s.", mc->pCertificateDatabase != NULL ? mc->pCertificateDatabase : "not set in configuration");
-
         nss_log_nss_error(APLOG_MARK, APLOG_ERR, base_server);
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
-            "Does the NSS database exist?");
-
-        nss_die();
+        if (mc->nInitCount == 1)
+            nss_die();
+        else
+            return;
     }
 
     if (fipsenabled) {
@@ -322,7 +216,7 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
         /* We ensure that ocspname and ocspurl are not NULL above. */
         if (ocspdefault) {
             SECStatus sv;
-
+ 
             sv = CERT_SetOCSPDefaultResponder(CERT_GetDefaultCertDB(),
                      ocspurl, ocspname);
 
@@ -349,15 +243,7 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
         }
     }
 
-    if (snienabled) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, base_server,
-            "SNI is enabled");
-    } else {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, base_server,
-            "SNI is disabled");
-    }
-
-    /*
+    /* 
      * Seed the Pseudo Random Number Generator (PRNG)
      * only need ptemp here; nothing inside allocated from the pool
      * needs to live once we return from nss_rand_seed().
@@ -370,18 +256,16 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
                     server_rec *base_server)
 {
     SSLModConfigRec *mc = myModConfig(base_server);
-    SSLSrvConfigRec *sc;
+    SSLSrvConfigRec *sc; 
     server_rec *s;
     int sslenabled = FALSE;
     int fipsenabled = FALSE;
     int threaded = 0;
     struct semid_ds status;
-    char *split_vhost_id = NULL;
-    char *last1;
 
     mc->nInitCount++;
 
-    /*
+    /* 
      * Let us cleanup on restarts and exists
      */
     apr_pool_cleanup_register(p, base_server,
@@ -389,7 +273,7 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
                               apr_pool_cleanup_null);
 
     mc->ptemp = ptemp;
-
+ 
     /*
      * Any init round fixes the global config
      */
@@ -402,7 +286,7 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
         ap_log_error(APLOG_MARK, APLOG_WARNING, 0, base_server,
             "NSSSessionCacheTimeout is deprecated. Ignoring.");
 
-        /* We still need to pass in a legal value to
+        /* We still need to pass in a legal value to 
          * SSL_ConfigMPServerSIDCache() and SSL_ConfigServerSessionIDCache()
          */
         mc->session_cache_timeout = 0; /* use NSS default */
@@ -439,14 +323,7 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
          * Create the server host:port string because we need it a lot
          */
         sc->vhost_id = nss_util_vhostid(p, s);
-
-        if (sc->sni && sc->server && sc->server->nickname != NULL && sc->vhost_id != NULL) {
-            split_vhost_id = apr_strtok((char *)sc->vhost_id, ":", &last1);
-            ap_str_tolower(split_vhost_id);
-            addHashVhostNick(split_vhost_id, (char *)sc->server->nickname);
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                "SNI: %s -> %s", split_vhost_id, (char *)sc->server->nickname);
-	}
+        sc->vhost_id_len = strlen(sc->vhost_id);
 
         /* Fix up stuff that may not have been set */
         if (sc->fips == UNSET) {
@@ -593,14 +470,14 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
     nss_io_layer_init();
 
     if (mc->nInitCount == 1) {
-        nss_init_SSLLibrary(base_server, mc->pPool);
+        nss_init_SSLLibrary(base_server);
         /*
          *  initialize servers
          */
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, base_server,
                      "Init: Initializing (virtual) servers for SSL");
 
-        CERTCertList* clist = PK11_ListCerts(PK11CertListUserUnique, NULL);
+        CERTCertList* clist = PK11_ListCerts(PK11CertListUser, NULL);
 
         for (s = base_server; s; s = s->next) {
             sc = mySrvConfig(s);
@@ -716,85 +593,76 @@ static void nss_init_ctx_protocol(server_rec *s,
         protocol_marker = "NSSProxyProtocol";
     }
 
-    if (mctx->auth.protocols == NULL) {
-        ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
-            "%s value not set; using: TLSv1.0, TLSv1.1 and TLSv1.2",
+    if (mctx->sc->fips) {
+        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
+            "In FIPS mode ignoring %s list, enabling TLSv1.0, TLSv1.1 and TLSv1.2",
             protocol_marker);
         tls = tls1_1 = tls1_2 = 1;
     } else {
-        lprotocols = strdup(mctx->auth.protocols);
-        ap_str_tolower(lprotocols);
-
-        if (strstr(lprotocols, "all") != NULL) {
-            ssl3 = tls = tls1_1 = tls1_2 = 1;
+        if (mctx->auth.protocols == NULL) {
+            ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
+                "%s value not set; using: TLSv1.0, TLSv1.1 and TLSv1.2",
+                protocol_marker);
+            tls = tls1_1 = tls1_2 = 1;
         } else {
-            char *protocol_list = NULL;
-            char *saveptr = NULL;
-            char *token = NULL;
+            lprotocols = strdup(mctx->auth.protocols);
+            ap_str_tolower(lprotocols);
 
-            for (protocol_list = lprotocols; ; protocol_list = NULL) {
-                token = strtok_r(protocol_list, ",", &saveptr);
-                if (token == NULL) {
-                    break;
-                } else if (strcmp(token, "sslv2") == 0) {
-                    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
-                                 "%s:  SSL2 is not supported",
-                                 protocol_marker);
-                } else if (strcmp(token, "sslv3") == 0) {
-                    if (mctx->sc->fips) {
-                        ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
-                                     "%s: SSL3 is disabled by FIPS policy",
+            if (strstr(lprotocols, "all") != NULL) {
+                ssl3 = tls = tls1_1 = tls1_2 = 1;
+            } else {
+                char *protocol_list = NULL;
+                char *saveptr = NULL;
+                char *token = NULL;
+
+                for (protocol_list = lprotocols; ; protocol_list = NULL) {
+                    token = strtok_r(protocol_list, ",", &saveptr);
+                    if (token == NULL) {
+                        break;
+                    } else if (strcmp(token, "sslv2") == 0) {
+                        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
+                                     "%s:  SSL2 is not supported",
                                      protocol_marker);
-                    } else {
+                    } else if (strcmp(token, "sslv3") == 0) {
                         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
                                      "%s:  Enabling SSL3",
                                      protocol_marker);
                         ssl3 = 1;
+                    } else if (strcmp(token, "tlsv1") == 0) {
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                                     "%s:  Enabling TLSv1.0 via TLSv1",
+                                     protocol_marker);
+                        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
+                                     "%s:  The 'TLSv1' protocol name has been deprecated; please change 'TLSv1' to 'TLSv1.0'.",
+                                     protocol_marker);
+                        tls = 1;
+                    } else if (strcmp(token, "tlsv1.0") == 0) {
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                                     "%s:  Enabling TLSv1.0",
+                                     protocol_marker);
+                        tls = 1;
+                    } else if (strcmp(token, "tlsv1.1") == 0) {
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                                     "%s:  Enabling TLSv1.1",
+                                     protocol_marker);
+                        tls1_1 = 1;
+                    } else if (strcmp(token, "tlsv1.2") == 0) {
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                                     "%s:  Enabling TLSv1.2",
+                                     protocol_marker);
+                        tls1_2 = 1;
+                    } else {
+                        ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
+                                     "%s:  Unknown protocol '%s' not supported",
+                                     protocol_marker, token);
                     }
-                } else if (strcmp(token, "tlsv1") == 0) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                                 "%s:  Enabling TLSv1.0 via TLSv1",
-                                 protocol_marker);
-                    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
-                                 "%s:  The 'TLSv1' protocol name has been deprecated; please change 'TLSv1' to 'TLSv1.0'.",
-                                 protocol_marker);
-                    tls = 1;
-                } else if (strcmp(token, "tlsv1.0") == 0) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                                 "%s:  Enabling TLSv1.0",
-                                 protocol_marker);
-                    tls = 1;
-                } else if (strcmp(token, "tlsv1.1") == 0) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                                 "%s:  Enabling TLSv1.1",
-                                 protocol_marker);
-                    tls1_1 = 1;
-                } else if (strcmp(token, "tlsv1.2") == 0) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                                 "%s:  Enabling TLSv1.2",
-                                 protocol_marker);
-                    tls1_2 = 1;
-                } else {
-                    ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
-                                 "%s:  Unknown protocol '%s' not supported",
-                                 protocol_marker, token);
                 }
             }
-        }
-        free(lprotocols);
-
-        /*
-         * After processing the specified protocols list,
-         * if FIPS mode is enabled with no TLS protocols,
-         * enable ALL TLS protocols.
-         */
-        if ((mctx->sc->fips) && (tls == 0) && (tls1_1 == 0) && (tls1_2 == 0)) {
-            ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
-                "%s: FIPS mode no valid protocols set, enabling TLSv1.0, TLSv1.1 and TLSv1.2",
-                protocol_marker);
-            tls = tls1_1 = tls1_2 = 1;
+            free(lprotocols);
         }
     }
+
+    stat = SECSuccess;
 
     stat = SSL_OptionSet(mctx->model, SSL_ENABLE_SSL2, PR_FALSE);
 
@@ -895,27 +763,6 @@ static void nss_init_ctx_protocol(server_rec *s,
 
     mctx->ssl3 = ssl3;
     mctx->tls = tls || tls1_1 || tls1_2;
-
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-        "%sabling TLS Session Tickets", mctx->sc->session_tickets == PR_TRUE ? "En" : "Dis");
-    if (SSL_OptionSet(mctx->model, SSL_ENABLE_SESSION_TICKETS,
-        mctx->sc->session_tickets) != SECSuccess) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                "Unable to configure TLS Session Tickets");
-        nss_log_nss_error(APLOG_MARK, APLOG_ERR, s);
-        nss_die();
-    }
-#ifdef ENABLE_SERVER_DHE
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-        "Enabling DHE key exchange");
-    if (SSL_OptionSet(mctx->model, SSL_ENABLE_SERVER_DHE,
-        PR_TRUE) != SECSuccess) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                "Unable to enable DHE key exchange");
-        nss_log_nss_error(APLOG_MARK, APLOG_ERR, s);
-        nss_die();
-    }
-#endif
 }
 
 static void nss_init_ctx_session_cache(server_rec *s,
@@ -980,14 +827,14 @@ static void nss_init_ctx_cipher_suite(server_rec *s,
 {
     PRBool cipher_state[ciphernum];
     PRBool fips_state[ciphernum];
-    const char *suite = mctx->auth.cipher_suite;
+    const char *suite = mctx->auth.cipher_suite; 
     char * object_type = NULL;
     char * cipher_suite_marker = NULL;
     char * ciphers;
     char * fipsciphers = NULL;
     int i;
-
-    /*
+ 
+    /* 
      *  Configure SSL Cipher Suite
      */
     if (!suite) {
@@ -1130,11 +977,7 @@ static void nss_init_ctx_cipher_suite(server_rec *s,
 
     /* Finally actually enable the selected ciphers */
     for (i=0; i<ciphernum;i++) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-            "%sable cipher: %s",
-            cipher_state[i] == 1 ? "En" : "Dis",
-            ciphers_def[i].name);
-        SSL_CipherPrefSet(mctx->model, ciphers_def[i].num, cipher_state[i] == 1 ? PR_TRUE : PR_FALSE);
+        SSL_CipherPrefSet(mctx->model, ciphers_def[i].num, cipher_state[i]);
     }
 }
 
@@ -1158,17 +1001,17 @@ static void nss_init_server_check(server_rec *s,
 static void nss_init_ctx(server_rec *s,
                          apr_pool_t *p,
                          apr_pool_t *ptemp,
-                         modnss_ctx_t *mctx)
+                         modnss_ctx_t *mctx) 
 {
 
     nss_init_ctx_socket(s, p, ptemp, mctx);
 
     nss_init_ctx_protocol(s, p, ptemp, mctx);
-
+    
     nss_init_ctx_session_cache(s, p, ptemp, mctx);
-
+    
     nss_init_ctx_callbacks(s, p, ptemp, mctx);
-
+    
     nss_init_ctx_verify(s, p, ptemp, mctx);
 
     nss_init_ctx_cipher_suite(s, p, ptemp, mctx);
@@ -1180,20 +1023,13 @@ static void nss_init_certificate(server_rec *s, const char *nickname,
                                  SSLKEAType *KEAtype,
                                  PRFileDesc *model,
                                  int enforce,
-                                 int sni,
                                  const CERTCertList* clist)
 {
     SECCertTimeValidity certtimestatus;
     SECStatus secstatus;
 
     PK11SlotInfo* slot = NULL;
-    CERTCertNicknames *certNickDNS = NULL;
-    char **nnptr = NULL;
-    int nn = 0;
-    apr_array_header_t *names = NULL;
-    apr_array_header_t *wild_names = NULL;
-    int i, j;
-
+ 
     if (nickname == NULL) {
         return;
     }
@@ -1223,13 +1059,13 @@ static void nss_init_certificate(server_rec *s, const char *nickname,
 
     if (strchr(nickname, ':'))
     {
-        char* token = strdup(nickname);
+        char* token = strdup(nickname); 
         char* colon = strchr(token, ':');
         if (colon) {
             *colon = 0;
             slot = PK11_FindSlotByName(token);
             if (!slot) {
-                /*
+                /* 
                  * Slot not found. This should never happen because we
                  * already found the cert.
                  */
@@ -1259,56 +1095,17 @@ static void nss_init_certificate(server_rec *s, const char *nickname,
 
     *KEAtype = NSS_FindCertKEAType(*servercert);
 
-    /* add ServerAlias entries to hash */
-    names = s->names;
-    if (names) {
-        char **name = (char **)names->elts;
-        for (i = 0; i < names->nelts; ++i) {
-            ap_str_tolower(name[i]);
-            addHashVhostNick(name[i], (char *)nickname);
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                "SNI ServerAlias: %s -> %s", name[i], nickname);
-        }
-    }
-
-    /* add ServerAlias entries with wildcards */
-    wild_names = s->wild_names;
-    if (wild_names) {
-        char **wild_name = (char **)wild_names->elts;
-        for (j = 0; j < wild_names->nelts; ++j) {
-            ap_str_tolower(wild_name[j]);
-            addHashVhostNick(wild_name[j], (char *)nickname);
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                "SNI wildcard: %s -> %s", wild_name[j], nickname);
-        }
-    }
-
-    /* get valid DNS names from certificate to hash */
-    certNickDNS = CERT_GetValidDNSPatternsFromCert(*servercert);
-
-    if (certNickDNS) {
-        nnptr = certNickDNS->nicknames;
-        nn = certNickDNS->numnicknames;
-
-        while ( nn > 0 ) {
-            ap_str_tolower(*nnptr);
-            addHashVhostNick(*nnptr, (char *)nickname);
-            nnptr++;
-            nn--;
-        }
-        PORT_FreeArena(certNickDNS->arena, PR_FALSE);
-    }
-
     /* Subject/hostname check */
     secstatus = CERT_VerifyCertName(*servercert, s->server_hostname);
     if (secstatus != SECSuccess) {
       char *cert_dns = CERT_GetCommonName(&(*servercert)->subject);
       ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-		   "Misconfiguration of certificate's CN and virtual name."
-		   " The certificate CN has %s. We expected %s as virtual"
-		   " name.", cert_dns, s->server_hostname);
+		       "Misconfiguration of certificate's CN and virtual name."
+		       " The certificate CN has %s. We expected %s as virtual"
+                       " name.", cert_dns, s->server_hostname);
       PORT_Free(cert_dns);
     }
+
     /*
      * Check for certs that are expired or not yet valid and WARN about it.
      * No need to refuse working - the client gets a warning.
@@ -1327,29 +1124,18 @@ static void nss_init_certificate(server_rec *s, const char *nickname,
         case secCertTimeNotValidYet:
             ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
                 "Certificate is not valid yet '%s'", nickname);
-            break;
         default:
             ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
                 "Unhandled Certificate time type %d for: '%s'", certtimestatus, nickname);
             break;
     }
 
-    secstatus = SSL_ConfigSecureServer(model, *servercert, *serverkey,
-                                       *KEAtype);
+    secstatus = SSL_ConfigSecureServer(model, *servercert, *serverkey, *KEAtype);
     if (secstatus != SECSuccess) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
             "SSL error configuring server: '%s'", nickname);
         nss_log_nss_error(APLOG_MARK, APLOG_ERR, s);
         nss_die();
-    }
-
-    if (PR_TRUE == sni) {
-        if (SSL_SNISocketConfigHook(model, (SSLSNISocketConfig) nssSSLSNISocketConfig, (void*) s) != SECSuccess) {
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                "SSL_SNISocketConfigHook failed");
-            nss_log_nss_error(APLOG_MARK, APLOG_ERR, s);
-            nss_die();
-        }
     }
 }
 
@@ -1373,8 +1159,9 @@ static void nss_init_server_certs(server_rec *s,
 #endif
         {
             /*
-             * This is a 'fatal' error since a 'nickname' is required for
-             * a 'server' object; log error message(s) as appropriate.
+             * Since this is a 'fatal' error, regardless of whether this
+             * particular invocation is from a 'server' object or a 'proxy'
+             * object, issue all error message(s) as appropriate.
              */
             if ((mctx->sc->enabled == TRUE) &&
                 (mctx->sc->server) &&
@@ -1383,18 +1170,23 @@ static void nss_init_server_certs(server_rec *s,
                     "NSSEngine on; no certificate nickname provided by NSSNickname.");
             }
 
+            if ((mctx->sc->proxy_enabled == TRUE) &&
+                (mctx->sc->proxy) &&
+                (mctx->sc->proxy->nickname == NULL)) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                    "NSSProxyEngine on; no certificate nickname provided by NSSProxyNickname.");
+            }
+
             nss_die();
         }
 
         nss_init_certificate(s, mctx->nickname, &mctx->servercert,
                              &mctx->serverkey, &mctx->serverKEAType,
-                             mctx->model, mctx->enforce, mctx->sc->sni,
-                             clist);
+                             mctx->model, mctx->enforce, clist);
 #ifdef NSS_ENABLE_ECC
         nss_init_certificate(s, mctx->eccnickname, &mctx->eccservercert,
                              &mctx->eccserverkey, &mctx->eccserverKEAType,
-                             mctx->model, mctx->enforce, mctx->sc->sni,
-                             clist);
+                             mctx->model, mctx->enforce, clist);
 #endif
     }
 
@@ -1404,6 +1196,7 @@ static void nss_init_server_certs(server_rec *s,
             "Error setting PKCS11 pin argument: '%s'", mctx->nickname);
         nss_die();
     }
+    
     secstatus = (SECStatus)SSL_HandshakeCallback(mctx->model, (SSLHandshakeCallback)NSSHandshakeCallback, NULL);
     if (secstatus != SECSuccess)
     {
@@ -1411,13 +1204,7 @@ static void nss_init_server_certs(server_rec *s,
             "SSL error configuring handshake callback: '%s'", mctx->nickname);
         nss_log_nss_error(APLOG_MARK, APLOG_ERR, s);
         nss_die();
-    } else {
-        if (!mctx->as_server && mctx->nickname != NULL) {
-            ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
-                "Configured proxy nickname as '%s'", mctx->nickname);
-        }
     }
-
 }
 
 static void nss_init_proxy_ctx(server_rec *s,
@@ -1484,6 +1271,7 @@ void nss_init_Child(apr_pool_t *p, server_rec *base_server)
         /* If any servers have SSL, we want sslenabled set so we
          * can perform further initialization
          */
+
         if (sc->enabled == UNSET) {
             sc->enabled = FALSE;
         }
@@ -1510,21 +1298,20 @@ void nss_init_Child(apr_pool_t *p, server_rec *base_server)
         }
     }
 
-    nss_init_SSLLibrary(base_server, mc->pPool);
+    nss_init_SSLLibrary(base_server);
 
     /* Configure all virtual servers */
-    CERTCertList* clist = PK11_ListCerts(PK11CertListUserUnique, NULL);
+    CERTCertList* clist = PK11_ListCerts(PK11CertListUser, NULL);
     for (s = base_server; s; s = s->next) {
         sc = mySrvConfig(s);
-        if (sc->server->servercert == NULL && NSS_IsInitialized()) {
+        if (sc->server->servercert == NULL && NSS_IsInitialized())
             nss_init_ConfigureServer(s, p, mc->ptemp, sc, clist);
-        }
     }
     if (clist) {
         CERT_DestroyCertList(clist);
     }
 
-    /*
+    /* 
      * Let us cleanup on restarts and exits
      */
     apr_pool_cleanup_register(p, base_server,
@@ -1537,7 +1324,7 @@ apr_status_t nss_init_ModuleKill(void *data)
     server_rec *base_server = (server_rec *)data;
     SSLModConfigRec *mc = myModConfig(base_server);
 
-    if (!NSS_IsInitialized() && !PR_Initialized()) {
+    if (!NSS_IsInitialized()) {
         return APR_SUCCESS;
     }
 
@@ -1548,11 +1335,6 @@ apr_status_t nss_init_ModuleKill(void *data)
 
     if (mc->nInitCount == 1)
         nss_init_ChildKill(base_server);
-
-    if (mp) {
-        apr_pool_destroy(mp);
-        mp = NULL;
-    }
 
     /* NSS_Shutdown() gets called in nss_init_ChildKill */
     return APR_SUCCESS;
@@ -1572,7 +1354,7 @@ apr_status_t nss_init_ChildKill(void *data)
     for (s = base_server; s; s = s->next) {
         sc = mySrvConfig(s);
 
-        if (sc->enabled == TRUE && NSS_IsInitialized()) {
+        if (sc->enabled == TRUE) {
             if (sc->server->nickname) {
                 CERT_DestroyCertificate(sc->server->servercert);
                 SECKEY_DestroyPrivateKey(sc->server->serverkey);
@@ -1591,7 +1373,7 @@ apr_status_t nss_init_ChildKill(void *data)
 
             shutdown = 1;
         }
-        if (sc->proxy_enabled && NSS_IsInitialized()) {
+        if (sc->proxy_enabled) {
             if (sc->proxy->servercert != NULL) {
                 CERT_DestroyCertificate(sc->proxy->servercert);
                 SECKEY_DestroyPrivateKey(sc->proxy->serverkey);
@@ -1604,11 +1386,6 @@ apr_status_t nss_init_ChildKill(void *data)
 
             shutdown = 1;
         }
-    }
-
-    if (mp) {
-        apr_pool_destroy(mp);
-        mp = NULL;
     }
 
     if (shutdown) {
@@ -1664,7 +1441,7 @@ SECStatus ownHandshakeCallback(PRFileDesc * socket, void *arg)
  */
 static PRBool
 cert_IsNewer(CERTCertificate *certa, CERTCertificate *certb)
-{
+{ 
     PRTime notBeforeA, notAfterA, notBeforeB, notAfterB, now;
     SECStatus rv;
     PRBool newerbefore, newerafter;
@@ -1752,11 +1529,11 @@ FindServerCertFromNickname(const char* name, const CERTCertList* clist)
              * Otherwise just return the cert if the nickname matches.
              */
             if (CERT_CheckCertUsage(cert, certUsageSSLServer) == SECSuccess) {
-                matchedUsage = 2;
+                matchedUsage = 2; 
             } else {
-                if (CERT_CheckCertUsage(cert, certUsageEmailRecipient) == SECSuccess)
+                if (CERT_CheckCertUsage(cert, certUsageEmailRecipient) == SECSuccess) 
                 {
-                    matchedUsage = 1;
+                    matchedUsage = 1; 
                 }
             }
 
@@ -1809,100 +1586,4 @@ FindServerCertFromNickname(const char* name, const CERTCertList* clist)
 SECStatus NSSHandshakeCallback(PRFileDesc *socket, void *arg)
 {
     return SECSuccess;
-}
-
-/*
- * Callback made during SSL request to see if SNI was requested and
- * pair it with a configured nickname.
- */
-PRInt32 nssSSLSNISocketConfig(PRFileDesc *fd, const SECItem *sniNameArr,
-           PRUint32 sniNameArrSize, void *arg)
-{
-    server_rec *s = (server_rec *)arg;
-
-    void *pinArg;
-    CERTCertificate *cert = NULL;
-    SECKEYPrivateKey *privKey = NULL;
-    char *nickName = NULL;
-    char *vhost = NULL;
-    apr_pool_t *str_p;
-
-    PORT_Assert(fd && sniNameArr);
-    if (!fd || !sniNameArr) {
-        return SSL_SNI_SEND_ALERT;
-    }
-
-    apr_pool_create(&str_p, NULL);
-    vhost = apr_pstrndup(str_p, (char *) sniNameArr->data, sniNameArr->len);
-
-    /* rfc6125 - Checking of Traditional Domain Names */
-    ap_str_tolower(vhost);
-
-    nickName = searchHashVhostbyNick(vhost);
-    if (nickName == NULL)  {
-        /* search for wildcard_names in serverAlises */
-        nickName = searchHashVhostbyNick_match(vhost);
-        if (nickName == NULL) {
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                "SNI: No matching SSL virtual host for servername "
-                "%s found (using default/first virtual host)",
-                vhost);
-            /*
-             * RFC 6066 section 3 says "It is NOT RECOMMENDED to send
-             * a warning-level unrecognized_name(112) alert, because
-             * the client's behavior in response to warning-level alerts
-             * is unpredictable."
-             *
-             * To maintain compatibility with mod_ssl, we won't send
-             * any alert (neither warning- nor fatal-level),
-             * i.e. we take the second action suggested in RFC 6066:
-             * "If the server understood the ClientHello extension but
-             * does not recognize the server name, the server SHOULD take
-             * one of two actions: either abort the handshake by sending
-             * a fatal-level unrecognized_name(112) alert or continue
-             * the handshake."
-             */
-             return 0;
-        }
-    }
-
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,"SNI: Found nickname %s for vhost: %s", nickName, vhost);
-
-    pinArg = SSL_RevealPinArg(fd);
-
-    /* if pinArg is NULL, then we would not get the key and
-     * return an error status. */
-    cert = PK11_FindCertFromNickname(nickName, &pinArg);
-    if (cert == NULL) {
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-            "Failed to find certificate for nickname: %s", nickName);
-        goto loser;
-    }
-    privKey = PK11_FindKeyByAnyCert(cert, &pinArg);
-    if (privKey == NULL) {
-        goto loser;
-    }
-
-    SSLKEAType certKEA = NSS_FindCertKEAType(cert);
-
-    if (SSL_ConfigSecureServer(fd, cert, privKey, certKEA) != SECSuccess) {
-        goto loser; /* Send alert */
-    }
-    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-        "SNI: Successfully paired vhost %s with nickname: %s", vhost, nickName);
-
-    apr_pool_destroy(str_p);
-    SECKEY_DestroyPrivateKey(privKey);
-    CERT_DestroyCertificate(cert);
-
-    return 0;
-
-loser:
-    if (privKey)
-        SECKEY_DestroyPrivateKey(privKey);
-    if (cert)
-        CERT_DestroyCertificate(cert);
-    apr_pool_destroy(str_p);
-
-    return SSL_SNI_SEND_ALERT;
 }
