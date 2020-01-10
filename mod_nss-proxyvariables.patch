@@ -1,0 +1,83 @@
+diff -rupN mod_nss-1.0.8.orig/nss_engine_init.c mod_nss-1.0.8/nss_engine_init.c
+--- mod_nss-1.0.8.orig/nss_engine_init.c	2012-10-03 14:28:50.751794000 -0700
++++ mod_nss-1.0.8/nss_engine_init.c	2012-10-04 16:33:08.278929000 -0700
+@@ -628,8 +628,21 @@ static void nss_init_ctx_protocol(server
+         tls = 1;
+     } else {
+         if (mctx->auth.protocols == NULL) {
+-            ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
+-                "NSSProtocols not set; using: SSLv3 and TLSv1");
++            /*
++             * Since this routine will be invoked individually for every
++             * thread associated with each 'server' object as well as for
++             * every thread associated with each 'proxy' object, issue a
++             * single per-thread 'warning' message for either a 'server'
++             * or a 'proxy' based upon the thread's object type.
++             */
++            if (mctx == mctx->sc->server) {
++                ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
++                    "NSSProtocol value not set; using: SSLv3 and TLSv1");
++            } else if (mctx == mctx->sc->proxy) {
++                ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
++                    "NSSProxyProtocol value not set; using: SSLv3 and TLSv1");
++            }
++
+             ssl3 = tls = 1;
+         } else {
+             lprotocols = strdup(mctx->auth.protocols);
+@@ -786,8 +799,25 @@ static void nss_init_ctx_cipher_suite(se
+      *  Configure SSL Cipher Suite
+      */
+     if (!suite) {
+-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+-                     "Required value NSSCipherSuite not set.");
++        /*
++         * Since this is a 'fatal' error, regardless of whether this
++         * particular invocation is from a 'server' object or a 'proxy'
++         * object, issue all error message(s) as appropriate.
++         */
++        if ((mctx->sc->enabled == TRUE) &&
++            (mctx->sc->server) &&
++            (!mctx->sc->server->auth.cipher_suite)) {
++            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
++                "NSSEngine on; required value NSSCipherSuite not set.");
++        }
++
++        if ((mctx->sc->proxy_enabled == TRUE) &&
++            (mctx->sc->proxy) &&
++            (!mctx->sc->proxy->auth.cipher_suite)) {
++            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
++                "NSSProxyEngine on; required value NSSProxyCipherSuite not set.");
++        }
++
+         nss_die();
+     }
+     ciphers = strdup(suite);
+@@ -1069,8 +1099,25 @@ static void nss_init_server_certs(server
+         if (mctx->nickname == NULL)
+ #endif
+         {
+-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+-                "No certificate nickname provided.");
++            /*
++             * Since this is a 'fatal' error, regardless of whether this
++             * particular invocation is from a 'server' object or a 'proxy'
++             * object, issue all error message(s) as appropriate.
++             */
++            if ((mctx->sc->enabled == TRUE) &&
++                (mctx->sc->server) &&
++                (mctx->sc->server->nickname == NULL)) {
++                ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
++                    "NSSEngine on; no certificate nickname provided by NSSNickname.");
++            }
++
++            if ((mctx->sc->proxy_enabled == TRUE) &&
++                (mctx->sc->proxy) &&
++                (mctx->sc->proxy->nickname == NULL)) {
++                ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
++                    "NSSProxyEngine on; no certificate nickname provided by NSSProxyNickname.");
++            }
++
+             nss_die();
+         }
+ 

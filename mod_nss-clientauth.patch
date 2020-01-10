@@ -1,0 +1,50 @@
+The first fix is to retrieve the full certificate subject instead of just the
+CN for FakeBasicAuth and prefix it with / to be compatible with OpenSSL.
+
+The second always attempts to retrieve the client certificate in
+nss_hook_ReadReq().
+
+https://bugzilla.redhat.com/show_bug.cgi?id=702437
+--- mod_nss-1.0.8.orig/nss_engine_io.c	2011-05-10 15:45:49.000000000 -0400
++++ mod_nss-1.0.8.orig/nss_engine_io.c	2011-05-11 15:21:30.000000000 -0400
+@@ -1364,13 +1364,9 @@ nss_AuthCertificate(void *arg, PRFileDes
+ 
+     status = SSL_AuthCertificate(arg, socket, checksig, isServer);
+ 
+-    if (status == SECSuccess) {
+-        conn_rec *c = filter_ctx->c;
+-        SSLConnRec *sslconn = myConnConfig(c);
+-
+-        sslconn->client_cert = SSL_PeerCertificate(socket);
+-        sslconn->client_dn = NULL;
+-    }
++    /* The certificate is copied to sslconn->client_cert in
++     * nss_hook_ReadReq()
++     */
+ 
+     return status;
+ }
+--- mod_nss-1.0.8.orig/nss_engine_kernel.c	2007-05-31 17:36:03.000000000 -0400
++++ mod_nss-1.0.8.orig/nss_engine_kernel.c	2011-05-11 15:30:38.000000000 -0400
+@@ -84,6 +84,11 @@ int nss_hook_ReadReq(request_rec *r)
+                      nss_util_vhostid(r->pool, r->server));
+     }
+ 
++    if (sslconn->client_cert != NULL)
++        CERT_DestroyCertificate(sslconn->client_cert);
++    sslconn->client_cert = SSL_PeerCertificate(ssl);
++    sslconn->client_dn = NULL;
++
+     return DECLINED;
+ }
+ 
+@@ -626,8 +631,8 @@ int nss_hook_UserCheck(request_rec *r)
+     }
+ 
+     if (!sslconn->client_dn) {
+-        char * cp = CERT_GetCommonName(&sslconn->client_cert->subject);
+-        sslconn->client_dn = apr_pstrdup(r->connection->pool, cp);
++        char * cp = CERT_NameToAscii(&sslconn->client_cert->subject);
++        sslconn->client_dn = apr_pstrcat(r->connection->pool, "/", cp, NULL);
+         PORT_Free(cp);
+     }

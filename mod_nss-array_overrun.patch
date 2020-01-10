@@ -1,0 +1,16 @@
+mod_nss-1.0.8/nss_engine_init.c:467: overrun-local: Overrunning static array
+"child_argv", with 5 elements, at position 5 with index variable "5".
+
+https://bugzilla.redhat.com/show_bug.cgi?id=714154
+diff -up --recursive mod_nss-1.0.8.orig/nss_engine_init.c mod_nss-1.0.8/nss_engine_init.c
+--- mod_nss-1.0.8.orig/nss_engine_init.c	2011-08-01 13:24:34.000000000 -0400
++++ mod_nss-1.0.8/nss_engine_init.c	2011-08-01 13:25:36.000000000 -0400
+@@ -429,7 +429,7 @@ int nss_init_Module(apr_pool_t *p, apr_p
+ 
+     /* Do we need to fire up our password helper? */
+     if (mc->nInitCount == 1) {
+-        const char * child_argv[5];
++        const char * child_argv[6];
+         apr_status_t rv;
+         struct sembuf sb;
+         char sembuf[32];

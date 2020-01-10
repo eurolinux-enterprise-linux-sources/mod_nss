@@ -1,0 +1,23 @@
+diff -rupN mod_nss-1.0.8.orig/nss_engine_init.c mod_nss-1.0.8/nss_engine_init.c
+--- mod_nss-1.0.8.orig/nss_engine_init.c	2012-01-27 17:18:41.001015000 -0800
++++ mod_nss-1.0.8/nss_engine_init.c	2012-01-27 17:20:14.093830000 -0800
+@@ -1237,9 +1237,6 @@ apr_status_t nss_init_ChildKill(void *da
+     server_rec *s;
+     int shutdown = 0;
+ 
+-    /* Clear any client-side session cache data */
+-    SSL_ClearSessionCache();
+-
+     /*
+      * Free the non-pool allocated structures
+      * in the per-server configurations
+@@ -1282,6 +1279,9 @@ apr_status_t nss_init_ChildKill(void *da
+     }
+ 
+     if (shutdown) {
++        /* Clear any client-side session cache data */
++        SSL_ClearSessionCache();
++
+         if (CERT_DisableOCSPDefaultResponder(CERT_GetDefaultCertDB())
+             != SECSuccess) {
+             ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,

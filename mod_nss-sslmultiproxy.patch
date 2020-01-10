@@ -1,0 +1,211 @@
+diff -rupN mod_nss-1.0.8.orig/mod_nss.c mod_nss-1.0.8/mod_nss.c
+--- mod_nss-1.0.8.orig/mod_nss.c	2012-11-09 16:13:26.967022000 -0800
++++ mod_nss-1.0.8/mod_nss.c	2012-11-09 20:18:39.936927000 -0800
+@@ -192,6 +192,9 @@ static SSLConnRec *nss_init_connection_c
+     return sslconn;
+ }
+ 
++static APR_OPTIONAL_FN_TYPE(ssl_proxy_enable) *othermod_proxy_enable;
++static APR_OPTIONAL_FN_TYPE(ssl_engine_disable) *othermod_engine_disable;
++
+ int nss_proxy_enable(conn_rec *c)
+ {
+     SSLSrvConfigRec *sc = mySrvConfig(c->base_server);
+@@ -199,6 +202,12 @@ int nss_proxy_enable(conn_rec *c)
+     SSLConnRec *sslconn = nss_init_connection_ctx(c);
+ 
+     if (!sc->proxy_enabled) {
++        if (othermod_proxy_enable) {
++            ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
++                          "mod_nss proxy not configured, passing through to mod_ssl module");
++            return othermod_proxy_enable(c);
++        }
++
+         ap_log_error(APLOG_MARK, APLOG_ERR, 0, c->base_server,
+                      "SSL Proxy requested for %s but not enabled "
+                      "[Hint: NSSProxyEngine]", sc->vhost_id);
+@@ -212,7 +221,7 @@ int nss_proxy_enable(conn_rec *c)
+     return 1;
+ }
+ 
+-int ssl_proxy_enable(conn_rec *c) {
++static int ssl_proxy_enable(conn_rec *c) {
+     return nss_proxy_enable(c);
+ }
+ 
+@@ -222,6 +231,10 @@ int nss_engine_disable(conn_rec *c)
+ 
+     SSLConnRec *sslconn;
+ 
++    if (othermod_engine_disable) {
++        othermod_engine_disable(c);
++    }
++
+     if (sc->enabled == FALSE) {
+         return 0;
+     }
+@@ -233,7 +246,7 @@ int nss_engine_disable(conn_rec *c)
+     return 1;
+ }
+ 
+-int ssl_engine_disable(conn_rec *c) {
++static int ssl_engine_disable(conn_rec *c) {
+     return nss_engine_disable(c);
+ }
+ 
+@@ -455,14 +468,17 @@ static void nss_register_hooks(apr_pool_
+ 
+     nss_var_register();
+ 
++    /* Always register these mod_nss optional functions */
+     APR_REGISTER_OPTIONAL_FN(nss_proxy_enable);
+     APR_REGISTER_OPTIONAL_FN(nss_engine_disable);
+ 
+-    /* If mod_ssl is not loaded then mod_nss can work with mod_proxy */
+-    if (APR_RETRIEVE_OPTIONAL_FN(ssl_proxy_enable) == NULL)
+-        APR_REGISTER_OPTIONAL_FN(ssl_proxy_enable);
+-    if (APR_RETRIEVE_OPTIONAL_FN(ssl_engine_disable) == NULL)
+-        APR_REGISTER_OPTIONAL_FN(ssl_engine_disable);
++    /* Save the state of any previously registered mod_ssl functions */
++    othermod_proxy_enable = APR_RETRIEVE_OPTIONAL_FN(ssl_proxy_enable);
++    othermod_engine_disable = APR_RETRIEVE_OPTIONAL_FN(ssl_engine_disable);
++
++    /* Always register these local mod_ssl optional functions */
++    APR_REGISTER_OPTIONAL_FN(ssl_proxy_enable);
++    APR_REGISTER_OPTIONAL_FN(ssl_engine_disable);
+ }
+ 
+ module AP_MODULE_DECLARE_DATA nss_module = {
+diff -rupN mod_nss-1.0.8.orig/mod_nss.h mod_nss-1.0.8/mod_nss.h
+--- mod_nss-1.0.8.orig/mod_nss.h	2012-11-09 16:13:26.799022000 -0800
++++ mod_nss-1.0.8/mod_nss.h	2012-11-09 17:14:18.660077000 -0800
+@@ -13,8 +13,8 @@
+  * limitations under the License.
+  */
+ 
+-#ifndef __MOD_SSL_H__
+-#define __MOD_SSL_H__
++#ifndef __MOD_NSS_H__
++#define __MOD_NSS_H__
+ 
+ /* Apache headers */
+ #include "httpd.h"
+@@ -25,6 +25,7 @@
+ #include "http_connection.h"
+ #include "http_request.h"
+ #include "http_protocol.h"
++#include "mod_ssl.h"
+ #include "util_script.h"
+ #include "util_filter.h"
+ #include "mpm.h"
+@@ -438,34 +439,24 @@ int nss_hook_ReadReq(request_rec *r);
+ /*  Variables  */
+ void         nss_var_register(void);
+ char        *nss_var_lookup(apr_pool_t *, server_rec *, conn_rec *, request_rec *, char *);
+-char        *ssl_var_lookup(apr_pool_t *, server_rec *, conn_rec *, request_rec *, char *);
+ void         nss_var_log_config_register(apr_pool_t *p);
+ 
+ APR_DECLARE_OPTIONAL_FN(char *, nss_var_lookup,
+                         (apr_pool_t *, server_rec *,
+                          conn_rec *, request_rec *, 
+                          char *));
+-APR_DECLARE_OPTIONAL_FN(char *, ssl_var_lookup,
+-                        (apr_pool_t *, server_rec *,
+-                         conn_rec *, request_rec *, 
+-                         char *));
+ 
+ /* An optional function which returns non-zero if the given connection
+  * is using SSL/TLS. */
+ APR_DECLARE_OPTIONAL_FN(int, nss_is_https, (conn_rec *));
+-APR_DECLARE_OPTIONAL_FN(int, ssl_is_https, (conn_rec *));
+ 
+ /* Proxy Support */
+ int nss_proxy_enable(conn_rec *c);
+ int nss_engine_disable(conn_rec *c);
+-int ssl_proxy_enable(conn_rec *c);
+-int ssl_engine_disable(conn_rec *c);
+ 
+ APR_DECLARE_OPTIONAL_FN(int, nss_proxy_enable, (conn_rec *));
+-APR_DECLARE_OPTIONAL_FN(int, ssl_proxy_enable, (conn_rec *));
+ 
+ APR_DECLARE_OPTIONAL_FN(int, nss_engine_disable, (conn_rec *));
+-APR_DECLARE_OPTIONAL_FN(int, ssl_engine_disable, (conn_rec *));
+ 
+ /* I/O */
+ PRFileDesc * nss_io_new_fd();
+@@ -495,4 +486,4 @@ void nss_die(void);
+ 
+ /* NSS callback */
+ SECStatus nss_AuthCertificate(void *arg, PRFileDesc *socket, PRBool checksig, PRBool isServer);
+-#endif /* __MOD_SSL_H__ */
++#endif /* __MOD_NSS_H__ */
+diff -rupN mod_nss-1.0.8.orig/nss_engine_vars.c mod_nss-1.0.8/nss_engine_vars.c
+--- mod_nss-1.0.8.orig/nss_engine_vars.c	2012-11-09 16:13:26.997024000 -0800
++++ mod_nss-1.0.8/nss_engine_vars.c	2012-11-09 20:15:32.948488000 -0800
+@@ -39,11 +39,17 @@ static char *nss_var_lookup_nss_cert_ver
+ static char *nss_var_lookup_nss_cipher(apr_pool_t *p, conn_rec *c, char *var);
+ static char *nss_var_lookup_nss_version(apr_pool_t *p, char *var);
+ static char *nss_var_lookup_protocol_version(apr_pool_t *p, conn_rec *c);
++static char *ssl_var_lookup(apr_pool_t *p, server_rec *s, conn_rec *c, request_rec *r, char *var);
++
++static APR_OPTIONAL_FN_TYPE(ssl_is_https) *othermod_is_https;
++static APR_OPTIONAL_FN_TYPE(ssl_var_lookup) *othermod_var_lookup;
+ 
+ static int nss_is_https(conn_rec *c)
+ {
+     SSLConnRec *sslconn = myConnConfig(c);
+-    return sslconn && sslconn->ssl;
++
++    return (sslconn && sslconn->ssl)
++        || (othermod_is_https && othermod_is_https(c));
+ }
+ 
+ static int ssl_is_https(conn_rec *c) {
+@@ -52,14 +58,17 @@ static int ssl_is_https(conn_rec *c) {
+ 
+ void nss_var_register(void)
+ {
++    /* Always register these mod_nss optional functions */
+     APR_REGISTER_OPTIONAL_FN(nss_is_https);
+     APR_REGISTER_OPTIONAL_FN(nss_var_lookup);
+ 
+-    /* These can only be registered if mod_ssl is not loaded */
+-    if (APR_RETRIEVE_OPTIONAL_FN(ssl_is_https) == NULL)
+-        APR_REGISTER_OPTIONAL_FN(ssl_is_https);
+-    if (APR_RETRIEVE_OPTIONAL_FN(ssl_var_lookup) == NULL)
+-        APR_REGISTER_OPTIONAL_FN(ssl_var_lookup);
++    /* Save the state of any previously registered mod_ssl functions */
++    othermod_is_https = APR_RETRIEVE_OPTIONAL_FN(ssl_is_https);
++    othermod_var_lookup = APR_RETRIEVE_OPTIONAL_FN(ssl_var_lookup);
++
++    /* Always register these local mod_ssl optional functions */
++    APR_REGISTER_OPTIONAL_FN(ssl_is_https);
++    APR_REGISTER_OPTIONAL_FN(ssl_var_lookup);
+ 
+     return;
+ }
+@@ -174,6 +183,15 @@ char *nss_var_lookup(apr_pool_t *p, serv
+      */
+     if (result == NULL && c != NULL) {
+         SSLConnRec *sslconn = myConnConfig(c);
++
++        if (strlen(var) > 4 && strcEQn(var, "SSL_", 4)
++            && (!sslconn || !sslconn->ssl) && othermod_var_lookup) {
++            /* If mod_ssl is registered for this connection,
++             * pass any SSL_* variable through to the mod_ssl module
++             */
++            return othermod_var_lookup(p, s, c, r, var);
++        }
++
+         if (strlen(var) > 4 && strcEQn(var, "SSL_", 4) 
+                  && sslconn && sslconn->ssl)
+             result = nss_var_lookup_ssl(p, c, var+4);
+@@ -252,7 +270,7 @@ char *nss_var_lookup(apr_pool_t *p, serv
+     return result;
+ }
+ 
+-char *ssl_var_lookup(apr_pool_t *p, server_rec *s, conn_rec *c, request_rec *r, char *var) {
++static char *ssl_var_lookup(apr_pool_t *p, server_rec *s, conn_rec *c, request_rec *r, char *var) {
+     return nss_var_lookup(p, s, c, r, var);
+ }
+ 

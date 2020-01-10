@@ -1,0 +1,113 @@
+SYNOPSIS
+
+ This Apache module provides strong cryptography for the Apache 2.0 webserver
+ via the Secure Sockets Layer (SSL v2/v3) and Transport Layer Security (TLS
+ v1) protocols by the help of the SSL/TLS implementation library NSS
+
+ This module is based heavily on the mod_ssl package. In fact, it's more
+ a conversion than anything else.
+
+BUILDING
+
+ To build this you'll need NSPR 4.4.1 and NSS 3.9.3. It may work with earlier
+ versions but these are recommended (or tested). These can be retrieved from
+ http://www.mozilla.org/. The --with-nspr and --with-nss tags require that
+ the package be installed in the same parent directory (e.g. /opt/nspr,
+ /usr/local/nspr, etc). It will look in this parent for include/, lib/, etc.
+
+ If --with-nss or --with-nspr are not passed configure will look for the
+ mozilla-[nss|nspr]-devel packages and use the libraries with that if found.
+ It is strongly recommended that the mozilla.org version be used instead.
+
+ Build and install those packages somewhere then configure the module with
+ something like:
+
+ % ./configure --with-apxs[=/path/to/apxs/] --with-nspr=/path/to/nspr/ --with-nss=/path/to/nss/
+ % gmake all install
+
+ You only need to use =/path/to/apxs if apxs isn't in your path or if you
+ want to install into a specific Apache installation.
+
+ This will install a sample configuration file nss.conf. You'll need to do
+ some hand-editing as well to tell Apache to read this file.
+
+ To httpd.conf add (anywhere is fine):
+
+ Include conf/nss.conf
+
+ You'll need to change the default ports in nss.conf from 443 to
+ something else if you aren't starting the server as root.
+
+CONFIGURING NSS
+
+ You'll need to create an NSS database and get a server certificate installed.
+ A script, gencerts, is included to help get things going with a self-signed
+ certificate. This is a *BAD* idea and you shouldn't use this. It is for
+ demonstration purposes only. As a matter of policy, users should not get
+ used to accepting a SSL certifiate signed by an unknown or untrusted
+ issuer.
+
+ The result of the gencert script is an NSS database that contains a
+ self-signed CA, a server certificate (nickname Server-Cert) and a
+ client certificate (alpha). The client certificate is generated to make
+ testing client authentication simpler.
+
+ You can store the token passwords in a file so you aren't prompted during
+ startup (so you can do unattended starts, for example). To do this, set
+ the file that will store the token passwords in the NSSPassPhraseDialog 
+ attribute in nss.conf ala:
+
+ NSSPassPhraseDialog  file:/path/to/password.conf
+
+ The format of the file for a non-hardware token is tokenname:password.
+ A sample for the internal software token is like:
+
+ internal:netscape
+
+BUILT-IN ROOT CAs
+
+NSS provides a list of built-in CA's (VeriSign, Thawte, etc). This takes the
+form of a shared library, libnssckbi.so. If this library is placed in the
+same directory as the certificate database then it will be loaded
+automatically when the server starts.
+
+DOCUMENTATION
+
+ See docs/mod_nss.html for additional information.
+
+ For NSS documentation, see http://www.mozilla.org/projects/security/pki/nss/
+
+REQUESTING A CERTIFICATE
+
+ The NSS command-line tools may be used to generate a certificate request
+ suitable for submission to a local CA or a commerical CA like Verisign,
+ and install the issued certificate into your local database. A sample
+ request may look something like this. This assumes that your certificate
+ database directory (NSSCertificateDatabase) is set to /opt/fortitude/alias
+
+ Step 1 Create the database. This assumes you want your certificate database
+        in /etc/httpd/alias
+
+ % cd /etc/httpd
+ % mkdir alias
+ % cd alias
+ % certutil -N -d .
+
+ Step 2 Generate a PKCS#10 certificate request
+
+ % certutil -R -d . -s "CN=test.example.com, O=Example, c=US" -o certreq.txt -a
+
+ The file certreq.txt contains an ASCII representation of the certificate
+ request and may be submitted to a CA for approval.
+
+ Step 3 The CA has issued your certificate. In this example, you have the
+        PKCS#7 (ASCII) copy in the file cert.txt. You have a copy of the CA
+        certificate chain in ca.txt.
+
+ % certutil -A -d . -n Server-Cert -t "u,u,u" -a < cert.txt 
+ % certutil -A -d . -n "My CA" -t "CTu,CTu,CTu" -a < ca.txt 
+
+ Step 4 Verify that the certificate and CA are installed correctly
+
+ % certutil -V -u V -d . -n Server-Cert
+
