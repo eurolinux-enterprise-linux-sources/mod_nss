@@ -4,7 +4,7 @@
 
 Name: mod_nss
 Version: 1.0.10
-Release: 2%{?dist}
+Release: 6%{?dist}
 Summary: SSL/TLS module for the Apache HTTP server
 Group: System Environment/Daemons
 License: ASL 2.0
@@ -41,9 +41,29 @@ Patch1: mod_nss-conf.patch
 Patch2: mod_nss-gencert.patch
 # Downgrade 'httpd 2.4' to 'httpd 2.2'
 Patch3: mod_nss-downgrade_httpd_2.4_to_httpd_2.2.patch
+# Add RenegBufferSize option
+Patch4: mod_nss-add_RenegBufferSize_option.patch
+# Fail for colons in credentials with FakeBasicAuth
+Patch5: mod_nss-auth_colon.patch
+# Relocate and downgrade NSSProxyNickname error message to warning (removed)
+Patch6: mod_nss-remove_NSSProxyNickname_error.patch
+# Add basic SNI server support
+Patch7: mod_nss-sni.patch
+# Enable SNI for reverse proxy requests
+Patch8: mod_nss-sni-proxy.patch
+# Rework the SNI reverse proxy patch
+Patch9: mod_nss-sni-proxy-rework.patch
+# Fix some memory leaks and invalid usages in new SNI code
+Patch10: mod_nss-sni-memleak.patch
+# Don't send SSL alerts if an unknown host is requested over SNI
+# to support older clients.
+Patch11: mod_nss-sni-no-alerts.patch
+# Always shut down the SSL cache when killing the module. This was
+# the source of a memory leak and potential crash during SIGHUP
+Patch12: mod_nss-shutdown-cache.patch
 # Allow specific FIPS protocols to be read in and processed from either of the
 # 'NSSProtocol' or 'NSSProxyProtocol' lists in the configuration file
-Patch4: mod_nss-specify_FIPS_protocols_in_protocol_list.patch
+Patch13: mod_nss-specify_FIPS_protocols_in_protocol_list.patch
 
 %description
 The mod_nss module provides strong cryptography for the Apache Web
@@ -56,7 +76,16 @@ security library.
 %patch1 -p1 -b .conf
 %patch2 -p1 -b .gencert
 %patch3 -p1 -b .downgrade_httpd_2.4_to_httpd_2.2
-%patch4 -p1 -b .FIPS_protocol_list
+%patch4 -p1 -b .add_RenegBufferSize_option
+%patch5 -p1 -b .auth_colon
+%patch6 -p1 -b .remove_NSSProxyNickname_error
+%patch7 -p1 -b .sni
+%patch8 -p1 -b .sni-reverse
+%patch9 -p1 -b .sni-reverse-rework
+%patch10 -p1 -b .sni-memleak
+%patch11 -p1 -b .sni-noalert
+%patch12 -p1 -b .sighup
+%patch13 -p1 -b .FIPS_protocol_list
 
 # Touch expression parser sources to prevent regenerating it
 touch nss_expr_*.[chyl]
@@ -154,8 +183,30 @@ fi
 %{_sbindir}/gencert
 
 %changelog
-* Fri Apr  1 2016 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-2
-- Resolves: rhbz #1322304 - NSSProtocol is ignored when NSSFIPS is enabled.
+* Thu Feb 25 2016 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-6
+- Resolves: rhbz #1312052 - NSSProtocol is ignored when NSSFIPS is enabled.
+
+* Tue Jan 19 2016 Rob Crittenden <rcritten@redhat.com> - 1.0.10-5
+- Resolves: rhbz #1295490 - Add server-side Server Name Indication
+  (SNI) support
+- Resolves: rhbz #1277613, #1295976 - Always shut down the SSL
+  session cache when killing the module. This was the source of a
+  rather large memory leak and potential crash in the case of
+  SIGHUP or service reload.
+
+* Fri Jan 15 2016 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-4
+- Resolves: rhbz #1280276 - Relocate and downgrade NSSProxyNickname error
+  message to a warning (removed error message)
+
+* Thu Jan 14 2016 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-3
+- Resolves: rhbz #1288477 - mod_nss: detect and fail for colons in
+  credentials with FakeBasicAuth 
+- Patch created by jkaluza@redhat.com for 'mod_ssl' in rhbz #1027442 -
+  mod_ssl: detect and fail for colons in credentials with FakeBasicAuth
+
+* Wed Oct 14 2015 Rob Crittenden <rcritten@redhat.com> - 1.0.10-2
+- Resolves: rhbz #1214366 - ssl re-negotiation buffer size in mod_nss
+  is hard-coded at 128K
 
 * Thu Jan 22 2015 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-1
 - Resolves: rhbz #1166316 - Rebase mod_nss to 1.0.10 to support TLSv1.2
@@ -219,10 +270,10 @@ fi
 - Lock around the pipe to nss_pcache for retrieving the token PIN
   (#677700)
 
-* Mon Feb  2 2011 Rob Crittenden <rcritten@redhat.com> - 1.0.8-10
+* Wed Feb  2 2011 Rob Crittenden <rcritten@redhat.com> - 1.0.8-10
 - Apply the patch for #634687
 
-* Mon Feb  2 2011 Rob Crittenden <rcritten@redhat.com> - 1.0.8-9
+* Wed Feb  2 2011 Rob Crittenden <rcritten@redhat.com> - 1.0.8-9
 - Add man page for gencert (#605376)
 - Fix hang when handling large POST under some conditions (#634687)
 

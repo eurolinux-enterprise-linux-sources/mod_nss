@@ -1,0 +1,114 @@
+From 575216022d33effb0c0c02835748f223a41a9a67 Mon Sep 17 00:00:00 2001
+From: Rob Crittenden <rcritten@redhat.com>
+Date: Tue, 12 Jan 2016 14:40:30 -0500
+Subject: [PATCH 4/4] Fix memory leaks, uninit var, invalid read
+
+Issues reported from valgrind.
+
+The invalid read came from using SNI hostInfo data directly. Just
+use the copy we apr_strndup() instead and all is well.
+
+The SNI hostInfo values were leaking. I had removed the calls
+to SECITEM_FreweItem at some point and forgotten to re-add them.
+
+mc->semid was not explicitly initialized so could have blown up
+if the compiler didn't automatically set it to 0. Explicitly set
+it to make warning go away (and to be safe).
+---
+ nss_engine_config.c |    1 +
+ nss_engine_init.c   |    5 +++++
+ nss_engine_kernel.c |   12 ++++++++----
+ 3 files changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/nss_engine_config.c b/nss_engine_config.c
+index 0602bba..9aee210 100644
+--- a/nss_engine_config.c
++++ b/nss_engine_config.c
+@@ -53,6 +53,7 @@ SSLModConfigRec *nss_config_global_create(server_rec *s)
+     mc->pphrase_dialog_path         = NULL;
+     mc->aRandSeed                   = apr_array_make(pool, 4,
+                                                      sizeof(ssl_randseed_t));
++    mc->semid                       = 0;
+ 
+     apr_pool_userdata_set(mc, SSL_MOD_CONFIG_KEY,
+                           apr_pool_cleanup_null,
+diff --git a/nss_engine_init.c b/nss_engine_init.c
+index 419169a..7f7b3c3 100644
+--- a/nss_engine_init.c
++++ b/nss_engine_init.c
+@@ -1249,6 +1249,7 @@ static void nss_init_certificate(server_rec *s, const char *nickname,
+             nnptr++;
+             nn--;
+         }
++        PORT_FreeArena(certNickDNS->arena, PR_FALSE);
+     }
+ 
+     /* Subject/hostname check */
+@@ -1890,6 +1891,10 @@ PRInt32 nssSSLSNISocketConfig(PRFileDesc *fd, const SECItem *sniNameArr,
+     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+         "SNI: Successfully paired vhost %s with nickname: %s", vhost, nickName);
+ 
++    apr_pool_destroy(str_p);
++    SECKEY_DestroyPrivateKey(privKey);
++    CERT_DestroyCertificate(cert);
++
+     return 0;
+ 
+ loser:
+diff --git a/nss_engine_kernel.c b/nss_engine_kernel.c
+index 2d87856..90f7ab0 100644
+--- a/nss_engine_kernel.c
++++ b/nss_engine_kernel.c
+@@ -87,24 +87,25 @@ int nss_hook_ReadReq(request_rec *r)
+                 apr_status_t rv;
+                 apr_pool_t *s_p;
+ 
+-                hostInfo->data[hostInfo->len] = '\0';
+-                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+-                    "SNI request for %s", (char *)hostInfo->data);
+-
+                 apr_pool_create(&s_p, NULL);
++
+                 servername = apr_pstrndup(s_p, (char *) hostInfo->data, hostInfo->len);
++                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
++                    "SNI request for %s", servername);
+ 
+                 if (!r->hostname) {
+                     ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server,
+                         "Hostname %s provided via SNI, but no hostname"
+                         " provided in HTTP request", servername);
+                     apr_pool_destroy(s_p);
++                    SECITEM_FreeItem(hostInfo, PR_TRUE);
+                     return HTTP_BAD_REQUEST;
+                 }
+ 
+                 rv = apr_parse_addr_port(&host, &scope_id, &port, r->hostname, r->pool);
+                 if (rv != APR_SUCCESS || scope_id) {
+                     apr_pool_destroy(s_p);
++                    SECITEM_FreeItem(hostInfo, PR_TRUE);
+                     return HTTP_BAD_REQUEST;
+                 }
+ 
+@@ -114,9 +115,11 @@ int nss_hook_ReadReq(request_rec *r)
+                         " via HTTP are different", servername, host);
+ 
+                     apr_pool_destroy(s_p);
++                    SECITEM_FreeItem(hostInfo, PR_TRUE);
+                     return HTTP_BAD_REQUEST;
+                 } 
+                 apr_pool_destroy(s_p);
++                SECITEM_FreeItem(hostInfo, PR_TRUE);
+             }
+         } else if (((sc->strict_sni_vhost_check)
+                    || (mySrvConfig(r->server))->strict_sni_vhost_check)
+@@ -893,6 +896,7 @@ int nss_hook_Fixup(request_rec *r)
+     if (hostInfo) {
+         servername = apr_pstrndup(r->pool, (char *) hostInfo->data, hostInfo->len);
+         apr_table_set(env, "SSL_TLS_SNI", servername);
++        SECITEM_FreeItem(hostInfo, PR_TRUE);
+     }
+ 
+     /* standard SSL environment variables */
+-- 
+1.7.1
+

@@ -1,0 +1,53 @@
+From 676e4f9c600d186aae69ddfc7d641316ea845bfe Mon Sep 17 00:00:00 2001
+From: Rob Crittenden <rcritten@redhat.com>
+Date: Fri, 15 Jan 2016 10:15:03 -0500
+Subject: [PATCH] Always call SSL_ShutdownServerSessionIDCache() in ModuleKill
+
+The guard of NSS_IsInitialized() was too strict because of the
+way Apache loads and unloads modules. We need to clean up the
+SessionIDCache thread locking when a SIGHUP is received otherwise
+a crash will occur.
+
+Note that this also eliminates a rather huge memory leak when
+the server is reloaded with a SIGHUP.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1277613
+https://bugzilla.redhat.com/show_bug.cgi?id=1295976
+---
+ nss_engine_init.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/nss_engine_init.c b/nss_engine_init.c
+index c218598..b158439 100644
+--- a/nss_engine_init.c
++++ b/nss_engine_init.c
+@@ -1448,7 +1448,7 @@ apr_status_t nss_init_ModuleKill(void *data)
+     server_rec *base_server = (server_rec *)data;
+     SSLModConfigRec *mc = myModConfig(base_server);
+ 
+-    if (!NSS_IsInitialized()) {
++    if (!NSS_IsInitialized() && !PR_Initialized()) {
+         return APR_SUCCESS;
+     }
+ 
+@@ -1483,7 +1483,7 @@ apr_status_t nss_init_ChildKill(void *data)
+     for (s = base_server; s; s = s->next) {
+         sc = mySrvConfig(s);
+ 
+-        if (sc->enabled == TRUE) {
++        if (sc->enabled == TRUE && NSS_IsInitialized()) {
+             if (sc->server->nickname) {
+                 CERT_DestroyCertificate(sc->server->servercert);
+                 SECKEY_DestroyPrivateKey(sc->server->serverkey);
+@@ -1502,7 +1502,7 @@ apr_status_t nss_init_ChildKill(void *data)
+ 
+             shutdown = 1;
+         }
+-        if (sc->proxy_enabled) {
++        if (sc->proxy_enabled && NSS_IsInitialized()) {
+             if (sc->proxy->servercert != NULL) {
+                 CERT_DestroyCertificate(sc->proxy->servercert);
+                 SECKEY_DestroyPrivateKey(sc->proxy->serverkey);
+-- 
+2.5.0
+

@@ -1,0 +1,202 @@
+commit a62526d425dcbeaa1486cf685c2927afa0459e1d
+Author: Rob Crittenden <rcritten@redhat.com>
+Date:   Wed Jun 10 18:01:45 2015 -0400
+
+    Add RenegBufferSize option
+    
+    Control the buffer size used on a POST when SSL renegotiation is
+    being done. The default is 128K.
+    
+    Resolves BZ 1214366
+
+diff --git a/docs/mod_nss.html b/docs/mod_nss.html
+index 052a464..e2a4fe2 100644
+--- a/docs/mod_nss.html
++++ b/docs/mod_nss.html
+@@ -1033,6 +1033,21 @@ components of the client certificate, the remote IP address, etc.<br>
+ <br>
+ <code>NSSRequire<br>
+ </code><br>
++<br>
++<big><big>NSSRenegBufferSize</big></big><br>
++<br>
++Configure the amount of memory that will be used for buffering the
++request body if a per-location SSL renegotiation is required due
++to changed access control requirements. The value is in bytes.
++The default is 128K.
++<br>
++If set to 0 then no buffering is done.
++<br><br>
++<span style="font-weight: bold;">Example</span><br>
++<br>
++<code>NSSRenegBufferSize 262144<br>
++</code><br>
++<br>
+ <big><big>NSSProxyEngine</big></big><br>
+ <br>
+ Enables or disables mod_nss HTTPS support for mod_proxy.<br>
+diff --git a/mod_nss.c b/mod_nss.c
+index 0f74892..8e63f1a 100644
+--- a/mod_nss.c
++++ b/mod_nss.c
+@@ -127,6 +127,11 @@ static const command_rec nss_config_cmds[] = {
+     SSL_CMD_DIR(Require, AUTHCFG, RAW_ARGS,
+                "Require a boolean expression to evaluate to true for granting access" 
+                "(arbitrary complex boolean expression - see manual)")
++    SSL_CMD_DIR(RenegBufferSize, AUTHCFG, TAKE1,
++                "Configure the amount of memory that will be used for buffering the "
++                "request body if a per-location SSL renegotiation is required due to "
++                "changed access control requirements")
++
+     /* 
+      * Proxy configuration for remote SSL connections
+      */
+diff --git a/mod_nss.h b/mod_nss.h
+index e219ad2..64cdb69 100644
+--- a/mod_nss.h
++++ b/mod_nss.h
+@@ -143,6 +143,11 @@ ap_set_module_config(c->conn_config, &nss_module, val)
+ #define SSL_SESSION_CACHE_SIZE     10000
+ #endif
+ 
++/* Default setting for per-dir reneg buffer. */
++#ifndef DEFAULT_RENEG_BUFFER_SIZE
++#define DEFAULT_RENEG_BUFFER_SIZE (128 * 1024)
++#endif
++
+ /*
+  * Define the SSL options
+  */
+@@ -328,6 +333,7 @@ typedef struct {
+     const char         *szCipherSuite;
+     nss_verify_t        nVerifyClient;
+     const char         *szUserName;
++    apr_size_t          nRenegBufferSize;
+ } SSLDirConfigRec;
+ 
+ /*
+@@ -395,6 +401,8 @@ const char *nss_cmd_NSSUserName(cmd_parms *cmd, void *dcfg, const char *arg);
+ const char *nss_cmd_NSSOptions(cmd_parms *, void *, const char *);
+ const char *nss_cmd_NSSRequireSSL(cmd_parms *cmd, void *dcfg);
+ const char  *nss_cmd_NSSRequire(cmd_parms *, void *, const char *);
++const char *nss_cmd_NSSRenegBufferSize(cmd_parms *cmd, void *dcfg, const char *arg);
++
+ 
+ const char *nss_cmd_NSSProxyEngine(cmd_parms *cmd, void *dcfg, int flag);
+ const char *nss_cmd_NSSProxyProtocol(cmd_parms *, void *, const char *);
+@@ -455,7 +463,7 @@ char        *nss_util_readfilter(server_rec *, apr_pool_t *, const char *,
+                                  const char * const *);
+ /* ssl_io_buffer_fill fills the setaside buffering of the HTTP request
+  * to allow an SSL renegotiation to take place. */
+-int          nss_io_buffer_fill(request_rec *r);
++int          nss_io_buffer_fill(request_rec *r, apr_size_t maxlen);
+ 
+ int nss_rand_seed(server_rec *s, apr_pool_t *p, ssl_rsctx_t nCtx, char *prefix);
+ 
+diff --git a/nss_engine_config.c b/nss_engine_config.c
+index eac7f18..d1a83d4 100644
+--- a/nss_engine_config.c
++++ b/nss_engine_config.c
+@@ -240,6 +240,8 @@ void *nss_config_perdir_create(apr_pool_t *p, char *dir) {
+ 
+     dc->szUserName    = NULL;
+ 
++    dc->nRenegBufferSize = UNSET;
++
+     return dc;
+ }
+  
+@@ -272,6 +274,23 @@ const char *nss_cmd_NSSRequire(cmd_parms *cmd,
+     return NULL;
+ }
+ 
++const char *nss_cmd_NSSRenegBufferSize(cmd_parms *cmd,
++                                       void *dcfg,
++                                       const char *arg)
++{
++    SSLDirConfigRec *dc = dcfg;
++    int val;
++
++    val = atoi(arg);
++    if (val < 0) {
++        return apr_pstrcat(cmd->pool, "Invalid size for NSSRenegBufferSize: ",
++                           arg, NULL);
++    }
++    dc->nRenegBufferSize = val;
++
++    return NULL;
++}
++
+ void *nss_config_perdir_merge(apr_pool_t *p, void *basev, void *addv) {
+     SSLDirConfigRec *base = (SSLDirConfigRec *)basev;
+     SSLDirConfigRec *add  = (SSLDirConfigRec *)addv;
+@@ -299,6 +318,8 @@ void *nss_config_perdir_merge(apr_pool_t *p, void *basev, void *addv) {
+ 
+     cfgMergeString(szUserName);
+ 
++    cfgMergeInt(nRenegBufferSize);
++
+     return mrg;
+ }
+ 
+diff --git a/nss_engine_io.c b/nss_engine_io.c
+index c0fc20c..6e03a11 100644
+--- a/nss_engine_io.c
++++ b/nss_engine_io.c
+@@ -929,7 +929,7 @@ struct modnss_buffer_ctx {
+     apr_pool_t *pool;
+ };
+ 
+-int nss_io_buffer_fill(request_rec *r)
++int nss_io_buffer_fill(request_rec *r, apr_size_t maxlen)
+ {
+     conn_rec *c = r->connection;
+     struct modnss_buffer_ctx *ctx;
+@@ -945,7 +945,8 @@ int nss_io_buffer_fill(request_rec *r)
+     /* ... and a temporary brigade. */
+     tempb = apr_brigade_create(r->pool, c->bucket_alloc);
+ 
+-    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "filling buffer");
++    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "filling buffer, max size "
++                  "%" APR_SIZE_T_FMT " bytes", maxlen);
+ 
+     do {
+         apr_status_t rv;
+@@ -1001,9 +1002,10 @@ int nss_io_buffer_fill(request_rec *r)
+                       total, eos);
+ 
+         /* Fail if this exceeds the maximum buffer size. */
+-        if (total > SSL_MAX_IO_BUFFER) {
++        if (total > maxlen) {
+             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+-                          "request body exceeds maximum size for SSL buffer");
++                          "request body exceeds maximum size (%" APR_SIZE_T_FMT
++                          ") for SSL buffer", maxlen);
+             return HTTP_REQUEST_ENTITY_TOO_LARGE;
+         }
+ 
+diff --git a/nss_engine_kernel.c b/nss_engine_kernel.c
+index 337ca67..721eedb 100644
+--- a/nss_engine_kernel.c
++++ b/nss_engine_kernel.c
+@@ -351,9 +351,18 @@ int nss_hook_Access(request_rec *r)
+                 && strcmp(apr_table_get(r->headers_in, "content-length"), "0")))
+         && !r->expecting_100) {
+         int rv;
++        apr_size_t rsize;
+ 
+-        /* Fill the I/O buffer with the request body if possible. */
+-        rv = nss_io_buffer_fill(r);
++        rsize = dc->nRenegBufferSize == UNSET ? DEFAULT_RENEG_BUFFER_SIZE :
++                                                dc->nRenegBufferSize;
++
++        if (rsize > 0) {
++            /* Fill the I/O buffer with the request body if possible. */
++            rv = nss_io_buffer_fill(r, rsize);
++        } else {
++            /* If the reneg buffer size is set to zero, just fail. */
++            rv = HTTP_REQUEST_ENTITY_TOO_LARGE;
++        }
+ 
+         if (rv) {
+             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
