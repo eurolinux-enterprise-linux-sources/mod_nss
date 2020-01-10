@@ -90,13 +90,21 @@ static const command_rec nss_config_cmds[] = {
                 "(`[+-]XXX,...,[+-]XXX' - see manual)")
     SSL_CMD_SRV(Protocol, RAW_ARGS,
                 "Enable the various SSL protocols"
-                "(`[SSLv2|SSLv3|TLSv1|all] ...' - see manual)")
+                "(`[SSLv2|SSLv3|TLSv1.0|TLSv1.1|TLSv1.2|all] ...' - see manual)")
     SSL_CMD_ALL(VerifyClient, TAKE1,
                 "SSL Client Authentication "
                 "(`none', `optional', `require'")
     SSL_CMD_SRV(Nickname, TAKE1,
                 "SSL RSA Server Certificate nickname "
                 "(`Server-Cert'")
+#ifdef SSL_ENABLE_RENEGOTIATION
+    SSL_CMD_SRV(Renegotiation, FLAG,
+                "Enable SSL Renegotiation (default off) "
+                "(`on', `off')")
+    SSL_CMD_SRV(RequireSafeNegotiation, FLAG,
+                "If Rengotiation is allowed, require safe negotiation (default off) "
+                "(`on', `off')")
+#endif
 #ifdef NSS_ENABLE_ECC
     SSL_CMD_SRV(ECCNickname, TAKE1,
                 "SSL ECC Server Certificate nickname "
@@ -127,13 +135,15 @@ static const command_rec nss_config_cmds[] = {
                 "(`on', `off')")
     SSL_CMD_SRV(ProxyProtocol, RAW_ARGS,
                "SSL Proxy: enable or disable SSL protocol flavors "
-               "(`[+-][SSLv2|SSLv3|TLSv1] ...' - see manual)")
+               "(`[+-][SSLv2|SSLv3|TLSv1.0|TLSv1.1|TLSv1.2] ...' - see manual)")
     SSL_CMD_SRV(ProxyCipherSuite, TAKE1,
                "SSL Proxy: colon-delimited list of permitted SSL ciphers "
                "(`XXX:...:XXX' - see manual)")
     SSL_CMD_SRV(ProxyNickname, TAKE1,
                "SSL Proxy: client certificate Nickname to be for proxy connections "
                "(`nickname')")
+    SSL_CMD_SRV(ProxyCheckPeerCN, FLAG,
+                "SSL Proxy: check the peers certificate CN")
 
 #ifdef IGNORE
     /* Deprecated directives. */
@@ -142,6 +152,8 @@ static const command_rec nss_config_cmds[] = {
     AP_INIT_RAW_ARGS("NSSLogLevel", ap_set_deprecated, NULL, OR_ALL, 
       "SSLLogLevel directive is no longer supported - use LogLevel."),
 #endif
+    AP_INIT_TAKE1("User", set_user, NULL, RSRC_CONF,
+                  "Apache user. Comes from httpd.conf."),
     
     AP_END_CMD
 };
@@ -180,6 +192,9 @@ static SSLConnRec *nss_init_connection_ctx(conn_rec *c)
     return sslconn;
 }
 
+static APR_OPTIONAL_FN_TYPE(ssl_proxy_enable) *othermod_proxy_enable;
+static APR_OPTIONAL_FN_TYPE(ssl_engine_disable) *othermod_engine_disable;
+
 int nss_proxy_enable(conn_rec *c)
 {
     SSLSrvConfigRec *sc = mySrvConfig(c->base_server);
@@ -187,6 +202,12 @@ int nss_proxy_enable(conn_rec *c)
     SSLConnRec *sslconn = nss_init_connection_ctx(c);
 
     if (!sc->proxy_enabled) {
+        if (othermod_proxy_enable) {
+            ap_log_cerror(APLOG_MARK, APLOG_DEBUG, 0, c,
+                          "mod_nss proxy not configured, passing through to mod_ssl module");
+            return othermod_proxy_enable(c);
+        }
+
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, c->base_server,
                      "SSL Proxy requested for %s but not enabled "
                      "[Hint: NSSProxyEngine]", sc->vhost_id);
@@ -200,7 +221,7 @@ int nss_proxy_enable(conn_rec *c)
     return 1;
 }
 
-int ssl_proxy_enable(conn_rec *c) {
+static int ssl_proxy_enable(conn_rec *c) {
     return nss_proxy_enable(c);
 }
 
@@ -209,6 +230,10 @@ int nss_engine_disable(conn_rec *c)
     SSLSrvConfigRec *sc = mySrvConfig(c->base_server);
 
     SSLConnRec *sslconn;
+
+    if (othermod_engine_disable) {
+        othermod_engine_disable(c);
+    }
 
     if (sc->enabled == FALSE) {
         return 0;
@@ -221,7 +246,7 @@ int nss_engine_disable(conn_rec *c)
     return 1;
 }
 
-int ssl_engine_disable(conn_rec *c) {
+static int ssl_engine_disable(conn_rec *c) {
     return nss_engine_disable(c);
 }
 
@@ -230,23 +255,30 @@ int ssl_engine_disable(conn_rec *c) {
 SECStatus NSSBadCertHandler(void *arg, PRFileDesc * socket)
 {
     conn_rec *c = (conn_rec *)arg;
+    SSLSrvConfigRec *sc = mySrvConfig(c->base_server);
     PRErrorCode err = PR_GetError();
     SECStatus rv = SECFailure;
     CERTCertificate *peerCert = SSL_PeerCertificate(socket);
+    const char *hostname_note;
                                                                                 
     switch (err) {
         case SSL_ERROR_BAD_CERT_DOMAIN:
-            if (c->remote_host != NULL) {
-                rv = CERT_VerifyCertName(peerCert, c->remote_host);
-                if (rv != SECSuccess) {
-                    char *remote = CERT_GetCommonName(&peerCert->subject);
+            if (sc->proxy_ssl_check_peer_cn == TRUE) {
+                if ((hostname_note = apr_table_get(c->notes, "proxy-request-hostname")) != NULL) {
+                    apr_table_unset(c->notes, "proxy-request-hostname");
+                    rv = CERT_VerifyCertName(peerCert, hostname_note);
+                    if (rv != SECSuccess) {
+                        char *remote = CERT_GetCommonName(&peerCert->subject);
+                        ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+                            "SSL Proxy: Possible man-in-the-middle attack. The remove server is %s, we expected %s", remote, hostname_note);
+                        PORT_Free(remote);
+                    }
+                } else {
                     ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
-                        "SSL Proxy: Possible man-in-the-middle attack. The remove server is %s, we expected %s", remote, c->remote_host);
-                    PORT_Free(remote);
+                        "SSL Proxy: I don't have the name of the host we're supposed to connect to so I can't verify that we are connecting to who we think we should be. Giving up.");
                 }
             } else {
-                ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
-                    "SSL Proxy: I don't have the name of the host we're supposed to connect to so I can't verify that we are connecting to who we think we should be. Giving up. Hint: See Apache bug 36468.");
+                rv = SECSuccess;
             }
             break;
         default:
@@ -330,7 +362,7 @@ static int nss_hook_pre_connection(conn_rec *c, void *csd)
     ap_log_error(APLOG_MARK, APLOG_INFO, 0, c->base_server,
                  "Connection to child %ld established "
                  "(server %s, client %s)", c->id, sc->vhost_id, 
-                 c->remote_ip ? c->remote_ip : "unknown");
+                 c->client_ip ? c->client_ip : "unknown");
 
     mctx = sslconn->is_proxy ? sc->proxy : sc->server;
 
@@ -436,14 +468,17 @@ static void nss_register_hooks(apr_pool_t *p)
 
     nss_var_register();
 
+    /* Always register these mod_nss optional functions */
     APR_REGISTER_OPTIONAL_FN(nss_proxy_enable);
     APR_REGISTER_OPTIONAL_FN(nss_engine_disable);
 
-    /* If mod_ssl is not loaded then mod_nss can work with mod_proxy */
-    if (APR_RETRIEVE_OPTIONAL_FN(ssl_proxy_enable) == NULL)
-        APR_REGISTER_OPTIONAL_FN(ssl_proxy_enable);
-    if (APR_RETRIEVE_OPTIONAL_FN(ssl_engine_disable) == NULL)
-        APR_REGISTER_OPTIONAL_FN(ssl_engine_disable);
+    /* Save the state of any previously registered mod_ssl functions */
+    othermod_proxy_enable = APR_RETRIEVE_OPTIONAL_FN(ssl_proxy_enable);
+    othermod_engine_disable = APR_RETRIEVE_OPTIONAL_FN(ssl_engine_disable);
+
+    /* Always register these local mod_ssl optional functions */
+    APR_REGISTER_OPTIONAL_FN(ssl_proxy_enable);
+    APR_REGISTER_OPTIONAL_FN(ssl_engine_disable);
 }
 
 module AP_MODULE_DECLARE_DATA nss_module = {

@@ -13,8 +13,8 @@
  * limitations under the License.
  */
 
-#ifndef __MOD_SSL_H__
-#define __MOD_SSL_H__
+#ifndef __MOD_NSS_H__
+#define __MOD_NSS_H__
 
 /* Apache headers */
 #include "httpd.h"
@@ -25,9 +25,9 @@
 #include "http_connection.h"
 #include "http_request.h"
 #include "http_protocol.h"
+#include "mod_ssl.h"
 #include "util_script.h"
 #include "util_filter.h"
-#include "mpm.h"
 #include "apr.h"
 #include "apr_strings.h"
 #define APR_WANT_STRFUNC
@@ -41,6 +41,9 @@
 #include "apr_shm.h"
 #include "apr_global_mutex.h"
 #include "apr_optional.h"
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
 
 #define MOD_NSS_VERSION AP_SERVER_BASEREVISION
 
@@ -244,6 +247,9 @@ typedef struct {
     struct {
         void *pV1, *pV2, *pV3, *pV4, *pV5, *pV6, *pV7, *pV8, *pV9, *pV10;
     } rCtx;
+
+    int semid;
+    const char *user;
 } SSLModConfigRec;
 
 typedef struct SSLSrvConfigRec SSLSrvConfigRec;
@@ -269,6 +275,10 @@ typedef struct {
     int tls;
     int tlsrollback;
     int enforce;
+#ifdef SSL_ENABLE_RENEGOTIATION
+    int enablerenegotiation;
+    int requiresafenegotiation;
+#endif
     const char *nickname;
 #ifdef NSS_ENABLE_ECC
     const char *eccnickname;
@@ -302,6 +312,7 @@ struct SSLSrvConfigRec {
     int              vhost_id_len;
     modnss_ctx_t    *server;
     modnss_ctx_t    *proxy;
+    BOOL             proxy_ssl_check_peer_cn;
 };
 
 /*
@@ -383,6 +394,10 @@ const char *nss_cmd_NSSCipherSuite(cmd_parms *cmd, void *dcfg, const char *arg);
 const char *nss_cmd_NSSVerifyClient(cmd_parms *cmd, void *dcfg, const char *arg);
 const char *nss_cmd_NSSProtocol(cmd_parms *cmd, void *dcfg, const char *arg);
 const char *nss_cmd_NSSNickname(cmd_parms *cmd, void *dcfg, const char *arg);
+#ifdef SSL_ENABLE_RENEGOTIATION
+const char *nss_cmd_NSSRenegotiation(cmd_parms *cmd, void *dcfg, int flag);
+const char *nss_cmd_NSSRequireSafeNegotiation(cmd_parms *cmd, void *dcfg, int flag);
+#endif
 #ifdef NSS_ENABLE_ECC
 const char *nss_cmd_NSSECCNickname(cmd_parms *cmd, void *dcfg, const char *arg);
 #endif
@@ -402,11 +417,13 @@ const char *nss_cmd_NSSProxyEngine(cmd_parms *cmd, void *dcfg, int flag);
 const char *nss_cmd_NSSProxyProtocol(cmd_parms *, void *, const char *);
 const char *nss_cmd_NSSProxyCipherSuite(cmd_parms *, void *, const char *);
 const char *nss_cmd_NSSProxyNickname(cmd_parms *cmd, void *dcfg, const char *arg);
+const char *nss_cmd_NSSProxyCheckPeerCN(cmd_parms *cmd, void *dcfg, int flag);
+const char *set_user(cmd_parms *cmd, void *dummy, const char *arg);
 
 /*  module initialization  */
 int  nss_init_Module(apr_pool_t *, apr_pool_t *, apr_pool_t *, server_rec *);
 void nss_init_Child(apr_pool_t *, server_rec *);
-void nss_init_ConfigureServer(server_rec *, apr_pool_t *, apr_pool_t *, SSLSrvConfigRec *);
+void nss_init_ConfigureServer(server_rec *, apr_pool_t *, apr_pool_t *, SSLSrvConfigRec *, const CERTCertList*);
 apr_status_t nss_init_ModuleKill(void *data);
 apr_status_t nss_init_ChildKill(void *data);
 int nss_parse_ciphers(server_rec *s, char *ciphers, PRBool cipher_list[ciphernum]);
@@ -421,14 +438,9 @@ int nss_hook_ReadReq(request_rec *r);
 /*  Variables  */
 void         nss_var_register(void);
 char        *nss_var_lookup(apr_pool_t *, server_rec *, conn_rec *, request_rec *, char *);
-char        *ssl_var_lookup(apr_pool_t *, server_rec *, conn_rec *, request_rec *, char *);
 void         nss_var_log_config_register(apr_pool_t *p);
 
 APR_DECLARE_OPTIONAL_FN(char *, nss_var_lookup,
-                        (apr_pool_t *, server_rec *,
-                         conn_rec *, request_rec *, 
-                         char *));
-APR_DECLARE_OPTIONAL_FN(char *, ssl_var_lookup,
                         (apr_pool_t *, server_rec *,
                          conn_rec *, request_rec *, 
                          char *));
@@ -436,19 +448,14 @@ APR_DECLARE_OPTIONAL_FN(char *, ssl_var_lookup,
 /* An optional function which returns non-zero if the given connection
  * is using SSL/TLS. */
 APR_DECLARE_OPTIONAL_FN(int, nss_is_https, (conn_rec *));
-APR_DECLARE_OPTIONAL_FN(int, ssl_is_https, (conn_rec *));
 
 /* Proxy Support */
 int nss_proxy_enable(conn_rec *c);
 int nss_engine_disable(conn_rec *c);
-int ssl_proxy_enable(conn_rec *c);
-int ssl_engine_disable(conn_rec *c);
 
 APR_DECLARE_OPTIONAL_FN(int, nss_proxy_enable, (conn_rec *));
-APR_DECLARE_OPTIONAL_FN(int, ssl_proxy_enable, (conn_rec *));
 
 APR_DECLARE_OPTIONAL_FN(int, nss_engine_disable, (conn_rec *));
-APR_DECLARE_OPTIONAL_FN(int, ssl_engine_disable, (conn_rec *));
 
 /* I/O */
 PRFileDesc * nss_io_new_fd();
@@ -473,9 +480,9 @@ int nss_rand_seed(server_rec *s, apr_pool_t *p, ssl_rsctx_t nCtx, char *prefix);
 SECStatus nss_Init_Tokens(server_rec *s);
 
 /* Logging */
-void nss_log_nss_error(const char *file, int line, int level, server_rec *s);
+void nss_log_nss_error(const char *file, int line, int module_index, int level, server_rec *s);
 void nss_die(void);
 
 /* NSS callback */
 SECStatus nss_AuthCertificate(void *arg, PRFileDesc *socket, PRBool checksig, PRBool isServer);
-#endif /* __MOD_SSL_H__ */
+#endif /* __MOD_NSS_H__ */

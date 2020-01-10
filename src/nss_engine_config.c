@@ -78,6 +78,10 @@ static void modnss_ctx_init(modnss_ctx_t *mctx)
     mctx->tls                 = PR_FALSE;
     mctx->tlsrollback         = PR_FALSE;
 
+#ifdef SSL_ENABLE_RENEGOTIATION
+    mctx->enablerenegotiation   = PR_FALSE;
+    mctx->requiresafenegotiation = PR_FALSE;
+#endif
     mctx->enforce             = PR_TRUE;
     mctx->nickname            = NULL;
 #ifdef NSS_ENABLE_ECC
@@ -136,6 +140,7 @@ static SSLSrvConfigRec *nss_config_server_new(apr_pool_t *p)
     sc->vhost_id_len                = 0;     /* set during module init */
     sc->proxy                       = NULL;
     sc->server                      = NULL;
+    sc->proxy_ssl_check_peer_cn     = TRUE;
 
     modnss_ctx_init_proxy(sc, p);
 
@@ -174,6 +179,10 @@ static void modnss_ctx_cfg_merge(modnss_ctx_t *base,
     cfgMerge(eccnickname, NULL);
 #endif
     cfgMerge(enforce, PR_TRUE);
+#ifdef SSL_ENABLE_RENEGOTIATION
+    cfgMerge(enablerenegotiation, PR_FALSE);
+    cfgMerge(requiresafenegotiation, PR_FALSE);
+#endif
 }
 
 static void modnss_ctx_cfg_merge_proxy(modnss_ctx_t *base,
@@ -206,6 +215,7 @@ void *nss_config_server_merge(apr_pool_t *p, void *basev, void *addv) {
     cfgMergeBool(fips);
     cfgMergeBool(enabled);
     cfgMergeBool(proxy_enabled);
+    cfgMergeBool(proxy_ssl_check_peer_cn);
 
     modnss_ctx_cfg_merge_proxy(base->proxy, add->proxy, mrg->proxy);
 
@@ -461,6 +471,26 @@ const char *nss_cmd_NSSNickname(cmd_parms *cmd,
     return NULL;
 }
 
+#ifdef SSL_ENABLE_RENEGOTIATION
+const char *nss_cmd_NSSRenegotiation(cmd_parms *cmd, void *dcfg, int flag)
+{
+    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
+
+    sc->server->enablerenegotiation = flag ? PR_TRUE : PR_FALSE;
+ 
+    return NULL;
+}
+
+const char *nss_cmd_NSSRequireSafeNegotiation(cmd_parms *cmd, void *dcfg, int flag)
+{
+    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
+
+    sc->server->requiresafenegotiation = flag ? PR_TRUE : PR_FALSE;
+ 
+    return NULL;
+}
+#endif
+
 #ifdef NSS_ENABLE_ECC
 const char *nss_cmd_NSSECCNickname(cmd_parms *cmd,
                                 void *dcfg,
@@ -512,6 +542,15 @@ const char *nss_cmd_NSSProxyNickname(cmd_parms *cmd,
     SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
 
     sc->proxy->nickname = arg;
+
+    return NULL;
+}
+
+const char *nss_cmd_NSSProxyCheckPeerCN(cmd_parms *cmd, void *dcfg, int flag)
+{
+    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
+
+    sc->proxy_ssl_check_peer_cn = flag ? TRUE : FALSE;
 
     return NULL;
 }
@@ -788,6 +827,15 @@ const char *nss_cmd_NSSOptions(cmd_parms *cmd,
             dc->nOptionsDel = SSL_OPT_NONE;
         }
     }
+
+    return NULL;
+}
+
+const char *set_user(cmd_parms *cmd, void *dummy, const char *arg)
+{
+    SSLModConfigRec *mc = myModConfig(cmd->server);
+
+    mc->user = arg;
 
     return NULL;
 }

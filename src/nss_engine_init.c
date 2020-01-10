@@ -15,7 +15,7 @@
 
 #include "mod_nss.h"
 #include "apr_thread_proc.h"
-#include "ap_mpm.h"
+#include "mpm_common.h"
 #include "secmod.h"
 #include "sslerr.h"
 #include "pk11func.h"
@@ -26,7 +26,7 @@
 static SECStatus ownBadCertHandler(void *arg, PRFileDesc * socket);
 static SECStatus ownHandshakeCallback(PRFileDesc * socket, void *arg);
 static SECStatus NSSHandshakeCallback(PRFileDesc *socket, void *arg);
-static CERTCertificate* FindServerCertFromNickname(const char* name);
+static CERTCertificate* FindServerCertFromNickname(const char* name, const CERTCertList* clist);
 SECStatus nss_AuthCertificate(void *arg, PRFileDesc *socket, PRBool checksig, PRBool isServer);
 
 /*
@@ -312,6 +312,7 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
     int sslenabled = FALSE;
     int fipsenabled = FALSE;
     int threaded = 0;
+    struct semid_ds status;
 
     mc->nInitCount++;
 
@@ -412,10 +413,26 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
     ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
                  "Init: %snitializing NSS library", mc->nInitCount == 1 ? "I" : "Re-i");
 
+    /* The first pass through this function will create the semaphore that
+     * will be used to lock the pipe. The user is still root at that point
+     * so for any later calls the semaphore ops will fail with permission
+     * errors. So switch the user to the Apache user.
+     */
+    if (mc->semid) {
+        uid_t user_id;
+
+        user_id = ap_uname2id(mc->user);
+        semctl(mc->semid, 0, IPC_STAT, &status);
+        status.sem_perm.uid = user_id;
+        semctl(mc->semid,0,IPC_SET,&status);
+    }
+
     /* Do we need to fire up our password helper? */
     if (mc->nInitCount == 1) {
-        const char * child_argv[5];
+        const char * child_argv[6];
         apr_status_t rv;
+        struct sembuf sb;
+        char sembuf[32];
 
         if (mc->pphrase_dialog_helper == NULL) {
             ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
@@ -423,11 +440,31 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
             nss_die();
         }
 
+        mc->semid = semget(IPC_PRIVATE, 1, IPC_CREAT | IPC_EXCL | 0600);
+        if (mc->semid == -1) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                "Unable to obtain semaphore.");
+            nss_die();
+        }
+
+        /* Initialize the semaphore */
+        sb.sem_num = 0;
+        sb.sem_op = 1;
+        sb.sem_flg = 0;
+        if ((semop(mc->semid, &sb, 1)) == -1) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                "Unable to initialize semaphore.");
+            nss_die();
+        }
+
+        PR_snprintf(sembuf, 32, "%d", mc->semid);
+
         child_argv[0] = mc->pphrase_dialog_helper;
-        child_argv[1] = fipsenabled ? "on" : "off";
-        child_argv[2] = mc->pCertificateDatabase;
-        child_argv[3] = mc->pDBPrefix;
-        child_argv[4] = NULL;
+        child_argv[1] = sembuf;
+        child_argv[2] = fipsenabled ? "on" : "off";
+        child_argv[3] = mc->pCertificateDatabase;
+        child_argv[4] = mc->pDBPrefix;
+        child_argv[5] = NULL;
 
         rv = apr_procattr_create(&mc->procattr, mc->pPool);
 
@@ -485,6 +522,8 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, base_server,
                      "Init: Initializing (virtual) servers for SSL");
 
+        CERTCertList* clist = PK11_ListCerts(PK11CertListUser, NULL);
+
         for (s = base_server; s; s = s->next) {
             sc = mySrvConfig(s);
             /*
@@ -496,7 +535,11 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
             /*
              * Read the server certificate and key
              */
-            nss_init_ConfigureServer(s, p, ptemp, sc);
+            nss_init_ConfigureServer(s, p, ptemp, sc, clist);
+        }
+
+        if (clist) {
+            CERT_DestroyCertList(clist);
         }
     }
 
@@ -548,6 +591,24 @@ static void nss_init_ctx_socket(server_rec *s,
             nss_die();
         }
     }
+#ifdef SSL_ENABLE_RENEGOTIATION
+    if (SSL_OptionSet(mctx->model, SSL_ENABLE_RENEGOTIATION,
+            mctx->enablerenegotiation ?
+              SSL_RENEGOTIATE_REQUIRES_XTN : SSL_RENEGOTIATE_NEVER
+              ) != SECSuccess) {
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                    "Unable to set SSL renegotiation");
+            nss_log_nss_error(APLOG_MARK, APLOG_ERR, s);
+            nss_die();
+    }
+    if (SSL_OptionSet(mctx->model, SSL_REQUIRE_SAFE_NEGOTIATION,
+            mctx->requiresafenegotiation) != SECSuccess) {
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                    "Unable to set SSL safe negotiation");
+            nss_log_nss_error(APLOG_MARK, APLOG_ERR, s);
+            nss_die();
+    }
+#endif
 }
 
 static void nss_init_ctx_protocol(server_rec *s,
@@ -555,49 +616,102 @@ static void nss_init_ctx_protocol(server_rec *s,
                                   apr_pool_t *ptemp,
                                   modnss_ctx_t *mctx)
 {
-    int ssl2, ssl3, tls;
+    int ssl2, ssl3, tls, tls1_1, tls1_2;
+    char *protocol_marker = NULL;
     char *lprotocols = NULL;
     SECStatus stat;
+    SSLVersionRange enabledVersions;
 
-    ssl2 = ssl3 = tls = 0;
+    ssl2 = ssl3 = tls = tls1_1 = tls1_2 = 0;
+
+    /*
+     * Since this routine will be invoked individually for every thread
+     * associated with each 'server' object as well as for every thread
+     * associated with each 'proxy' object, identify the protocol marker
+     * ('NSSProtocol' for 'server' versus 'NSSProxyProtocol' for 'proxy')
+     * via each thread's object type and apply this useful information to
+     * all log messages.
+     */
+    if (mctx == mctx->sc->server) {
+        protocol_marker = "NSSProtocol";
+    } else if (mctx == mctx->sc->proxy) {
+        protocol_marker = "NSSProxyProtocol";
+    }
 
     if (mctx->sc->fips) {
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
-            "In FIPS mode, enabling TLSv1");
-        tls = 1;
+            "In FIPS mode ignoring %s list, enabling TLSv1.0, TLSv1.1 and TLSv1.2",
+            protocol_marker);
+        tls = tls1_1 = tls1_2 = 1;
     } else {
         if (mctx->auth.protocols == NULL) {
             ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
-                "NSSProtocols not set; using: SSLv3 and TLSv1");
-            ssl3 = tls = 1;
+                "%s value not set; using: TLSv1.0, TLSv1.1 and TLSv1.2",
+                protocol_marker);
+            tls = tls1_1 = tls1_2 = 1;
         } else {
             lprotocols = strdup(mctx->auth.protocols);
             ap_str_tolower(lprotocols);
 
             if (strstr(lprotocols, "all") != NULL) {
 #ifdef WANT_SSL2
-                ssl2 = ssl3 = tls = 1;
+                ssl2 = ssl3 = tls = tls1_1 = tls1_2 = 1;
 #else
-                ssl3 = tls = 1;
+                ssl3 = tls = tls1_1 = tls1_2 = 1;
 #endif
             } else {
-                if (strstr(lprotocols, "sslv2") != NULL) {
+                char *protocol_list = NULL;
+                char *saveptr = NULL;
+                char *token = NULL;
+
+                for (protocol_list = lprotocols; ; protocol_list = NULL) {
+                    token = strtok_r(protocol_list, ",", &saveptr);
+                    if (token == NULL) {
+                        break;
+                    } else if (strcmp(token, "sslv2") == 0) {
 #ifdef WANT_SSL2
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s, "Enabling SSL2");
-                    ssl2 = 1;
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                                     "%s:  Enabling SSL2",
+                                     protocol_marker);
+                        ssl2 = 1;
 #else
-                    ap_log_error(APLOG_MARK, APLOG_INFO, 0, s, "SSL2 is not supported");
+                        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
+                                     "%s:  SSL2 is not supported",
+                                     protocol_marker);
 #endif
-                }
-
-                if (strstr(lprotocols, "sslv3") != NULL) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s, "Enabling SSL3");
-                    ssl3 = 1;
-                }
-
-                if (strstr(lprotocols, "tlsv1") != NULL) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s, "Enabling TLS");
-                    tls = 1;
+                    } else if (strcmp(token, "sslv3") == 0) {
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                                     "%s:  Enabling SSL3",
+                                     protocol_marker);
+                        ssl3 = 1;
+                    } else if (strcmp(token, "tlsv1") == 0) {
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                                     "%s:  Enabling TLSv1.0 via TLSv1",
+                                     protocol_marker);
+                        ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
+                                     "%s:  The 'TLSv1' protocol name has been deprecated; please change 'TLSv1' to 'TLSv1.0'.",
+                                     protocol_marker);
+                        tls = 1;
+                    } else if (strcmp(token, "tlsv1.0") == 0) {
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                                     "%s:  Enabling TLSv1.0",
+                                     protocol_marker);
+                        tls = 1;
+                    } else if (strcmp(token, "tlsv1.1") == 0) {
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                                     "%s:  Enabling TLSv1.1",
+                                     protocol_marker);
+                        tls1_1 = 1;
+                    } else if (strcmp(token, "tlsv1.2") == 0) {
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                                     "%s:  Enabling TLSv1.2",
+                                     protocol_marker);
+                        tls1_2 = 1;
+                    } else {
+                        ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
+                                     "%s:  Unknown protocol '%s' not supported",
+                                     protocol_marker, token);
+                    }
                 }
             }
             free(lprotocols);
@@ -612,31 +726,104 @@ static void nss_init_ctx_protocol(server_rec *s,
         stat = SSL_OptionSet(mctx->model, SSL_ENABLE_SSL2, PR_FALSE);
     }
 
+    /* Set protocol version ranges:
+     *
+     *     (1) Set the minimum protocol accepted
+     *     (2) Set the maximum protocol accepted
+     *     (3) Protocol ranges extend from maximum down to minimum protocol
+     *     (4) All protocol ranges are completely inclusive;
+     *         no protocol in the middle of a range may be excluded
+     *     (5) NSS automatically negotiates the use of the strongest protocol
+     *         for a connection starting with the maximum specified protocol
+     *         and downgrading as necessary to the minimum specified protocol
+     *
+     * For example, if SSL 3.0 is chosen as the minimum protocol, and
+     * TLS 1.1 is chosen as the maximum protocol, SSL 3.0, TLS 1.0, and
+     * TLS 1.1 will all be accepted as protocols, as TLS 1.0 will not and
+     * cannot be excluded from this range. NSS will automatically negotiate
+     * to utilize the strongest acceptable protocol for a connection starting
+     * with the maximum specified protocol and downgrading as necessary to the
+     * minimum specified protocol (TLS 1.2 -> TLS 1.1 -> TLS 1.0 -> SSL 3.0).
+     */
     if (stat == SECSuccess) {
+        /* Set minimum protocol version (lowest -> highest)
+         *
+         *     SSL 3.0 -> TLS 1.0 -> TLS 1.1 -> TLS 1.2
+         */
         if (ssl3 == 1) {
-            stat = SSL_OptionSet(mctx->model, SSL_ENABLE_SSL3, PR_TRUE);
+            enabledVersions.min = SSL_LIBRARY_VERSION_3_0;
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "%s:  [SSL 3.0] (minimum)",
+                         protocol_marker);
+        } else if (tls == 1) {
+            enabledVersions.min = SSL_LIBRARY_VERSION_TLS_1_0;
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "%s:  [TLS 1.0] (minimum)",
+                         protocol_marker);
+        } else if (tls1_1 == 1) {
+            enabledVersions.min = SSL_LIBRARY_VERSION_TLS_1_1;
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "%s:  [TLS 1.1] (minimum)",
+                         protocol_marker);
+        } else if (tls1_2 == 1) {
+            enabledVersions.min = SSL_LIBRARY_VERSION_TLS_1_2;
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "%s:  [TLS 1.2] (minimum)",
+                         protocol_marker);
         } else {
-            stat = SSL_OptionSet(mctx->model, SSL_ENABLE_SSL3, PR_FALSE);
+            /* Set default minimum protocol version to SSL 3.0 */
+            enabledVersions.min = SSL_LIBRARY_VERSION_3_0;
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "%s:  [SSL 3.0] (default minimum)",
+                         protocol_marker);
         }
-    }
-    if (stat == SECSuccess) {
-        if (tls == 1) {
-            stat = SSL_OptionSet(mctx->model, SSL_ENABLE_TLS, PR_TRUE);
+
+        /* Set maximum protocol version (highest -> lowest)
+         *
+         *     TLS 1.2 -> TLS 1.1 -> TLS 1.0 -> SSL 3.0
+         */
+        if (tls1_2 == 1) {
+            enabledVersions.max = SSL_LIBRARY_VERSION_TLS_1_2;
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "%s:  [TLS 1.2] (maximum)",
+                         protocol_marker);
+        } else if (tls1_1 == 1) {
+            enabledVersions.max = SSL_LIBRARY_VERSION_TLS_1_1;
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "%s:  [TLS 1.1] (maximum)",
+                         protocol_marker);
+        } else if (tls == 1) {
+            enabledVersions.max = SSL_LIBRARY_VERSION_TLS_1_0;
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "%s:  [TLS 1.0] (maximum)",
+                         protocol_marker);
+        } else if (ssl3 == 1) {
+            enabledVersions.max = SSL_LIBRARY_VERSION_3_0;
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "%s:  [SSL 3.0] (maximum)",
+                         protocol_marker);
         } else {
-            stat = SSL_OptionSet(mctx->model, SSL_ENABLE_TLS, PR_FALSE);
+            /* Set default maximum protocol version to TLS 1.2 */
+            enabledVersions.max = SSL_LIBRARY_VERSION_TLS_1_2;
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
+                         "%s:  [TLS 1.2] (default maximum)",
+                         protocol_marker);
         }
+
+        stat = SSL_VersionRangeSet(mctx->model, &enabledVersions);
     }
 
     if (stat != SECSuccess) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                "SSL protocol initialization failed.");
+                "%s:  SSL/TLS protocol initialization failed.",
+                protocol_marker);
         nss_log_nss_error(APLOG_MARK, APLOG_ERR, s);
         nss_die();
     }
 
     mctx->ssl2 = ssl2;
     mctx->ssl3 = ssl3;
-    mctx->tls = tls;
+    mctx->tls = tls || tls1_1 || tls1_2;
 }
 
 static void nss_init_ctx_session_cache(server_rec *s,
@@ -717,6 +904,8 @@ static void nss_init_ctx_cipher_suite(server_rec *s,
     PRBool cipher_state[ciphernum];
     PRBool fips_state[ciphernum];
     const char *suite = mctx->auth.cipher_suite; 
+    char * object_type = NULL;
+    char * cipher_suite_marker = NULL;
     char * ciphers;
     char * fipsciphers = NULL;
     int i;
@@ -725,10 +914,44 @@ static void nss_init_ctx_cipher_suite(server_rec *s,
      *  Configure SSL Cipher Suite
      */
     if (!suite) {
-        ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                     "Required value NSSCipherSuite not set.");
+        /*
+         * Since this is a 'fatal' error, regardless of whether this
+         * particular invocation is from a 'server' object or a 'proxy'
+         * object, issue all error message(s) as appropriate.
+         */
+        if ((mctx->sc->enabled == TRUE) &&
+            (mctx->sc->server) &&
+            (!mctx->sc->server->auth.cipher_suite)) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                "NSSEngine on; required value NSSCipherSuite not set.");
+        }
+
+        if ((mctx->sc->proxy_enabled == TRUE) &&
+            (mctx->sc->proxy) &&
+            (!mctx->sc->proxy->auth.cipher_suite)) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                "NSSProxyEngine on; required value NSSProxyCipherSuite not set.");
+        }
+
         nss_die();
     }
+
+    /*
+     * Since this routine will be invoked individually for every thread
+     * associated with each 'server' object as well as for every thread
+     * associated with each 'proxy' object, identify the cipher suite markers
+     * ('NSSCipherSuite' for 'server' versus 'NSSProxyCipherSuite' for 'proxy')
+     * via each thread's object type and apply this useful information to
+     * all log messages.
+     */
+    if (mctx == mctx->sc->server) {
+        object_type = "server";
+        cipher_suite_marker = "NSSCipherSuite";
+    } else if (mctx == mctx->sc->proxy) {
+        object_type = "proxy";
+        cipher_suite_marker = "NSSProxyCipherSuite";
+    }
+
     ciphers = strdup(suite);
 
 #define CIPHERSIZE 2048
@@ -763,13 +986,13 @@ static void nss_init_ctx_cipher_suite(server_rec *s,
         }
 
         ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                 "FIPS mode enabled, permitted SSL ciphers are: [%s]",
-                 fipsciphers);
+            "FIPS mode enabled on this %s, permitted SSL ciphers are: [%s]",
+            object_type, fipsciphers);
     }
 
     ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, s,
-                "Configuring permitted SSL ciphers [%s]",
-                 suite);
+                "%s:  Configuring permitted SSL ciphers [%s]",
+                 cipher_suite_marker, suite);
 
     /* Disable all NSS supported cipher suites. This is to prevent any new
      * NSS cipher suites from getting automatically and unintentionally
@@ -808,7 +1031,7 @@ static void nss_init_ctx_cipher_suite(server_rec *s,
         for (i=0; i<ciphernum; i++) {
             if (cipher_state[i] == PR_TRUE && fips_state[i] == PR_FALSE) {
                 ap_log_error(APLOG_MARK, APLOG_WARNING, 0, s,
-                    "Cipher %s is enabled but this is not a FIPS cipher, disabling.", ciphers_def[i].name);
+                    "Cipher %s is enabled for this %s, but this is not a FIPS cipher, disabling.", ciphers_def[i].name, object_type);
                 cipher_state[i] = PR_FALSE;
             }
         }
@@ -817,19 +1040,22 @@ static void nss_init_ctx_cipher_suite(server_rec *s,
     /* See if any ciphers have been enabled for a given protocol */
     if (mctx->ssl2 && countciphers(cipher_state, SSL2) == 0) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-            "SSL2 is enabled but no SSL2 ciphers are enabled.");
+            "%s:  SSL2 is enabled but no SSL2 ciphers are enabled.",
+            cipher_suite_marker);
         nss_die();
     }
 
     if (mctx->ssl3 && countciphers(cipher_state, SSL3) == 0) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-            "SSL3 is enabled but no SSL3 ciphers are enabled.");
+            "%s:  SSL3 is enabled but no SSL3 ciphers are enabled.",
+            cipher_suite_marker);
         nss_die();
     }
 
     if (mctx->tls && countciphers(cipher_state, TLS) == 0) {
         ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-            "TLS is enabled but no TLS ciphers are enabled.");
+            "%s:  TLS is enabled but no TLS ciphers are enabled.",
+            cipher_suite_marker);
         nss_die();
     }
 
@@ -880,7 +1106,8 @@ static void nss_init_certificate(server_rec *s, const char *nickname,
                                  SECKEYPrivateKey **serverkey,
                                  SSLKEAType *KEAtype,
                                  PRFileDesc *model,
-                                 int enforce)
+                                 int enforce,
+                                 const CERTCertList* clist)
 {
     SECCertTimeValidity certtimestatus;
     SECStatus secstatus;
@@ -894,17 +1121,15 @@ static void nss_init_certificate(server_rec *s, const char *nickname,
     ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
          "Using nickname %s.", nickname);
 
-    *servercert = FindServerCertFromNickname(nickname);
+    *servercert = FindServerCertFromNickname(nickname, clist);
 
     /* Verify the certificate chain. */
     if (*servercert != NULL) {
         SECCertificateUsage usage = certificateUsageSSLServer;
 
-        if (CERT_VerifyCertificateNow(CERT_GetDefaultCertDB(), *servercert, PR_TRUE, usage, NULL, NULL) != SECSuccess)  {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                "Certificate not verified: '%s'", nickname);
+        if (enforce) {
+            if (CERT_VerifyCertificateNow(CERT_GetDefaultCertDB(), *servercert, PR_TRUE, usage, NULL, NULL) != SECSuccess)  {
             nss_log_nss_error(APLOG_MARK, APLOG_ERR, s);
-            if (enforce) {
                 ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
                     "Unable to verify certificate '%s'. Add \"NSSEnforceValidCerts off\" to nss.conf so the server can start until the problem can be resolved.", nickname);
                 nss_die();
@@ -994,7 +1219,8 @@ static void nss_init_certificate(server_rec *s, const char *nickname,
 static void nss_init_server_certs(server_rec *s,
                                   apr_pool_t *p,
                                   apr_pool_t *ptemp,
-                                  modnss_ctx_t *mctx)
+                                  modnss_ctx_t *mctx,
+                                  const CERTCertList* clist)
 {
     SECStatus secstatus;
 
@@ -1008,18 +1234,35 @@ static void nss_init_server_certs(server_rec *s,
         if (mctx->nickname == NULL)
 #endif
         {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
-                "No certificate nickname provided.");
+            /*
+             * Since this is a 'fatal' error, regardless of whether this
+             * particular invocation is from a 'server' object or a 'proxy'
+             * object, issue all error message(s) as appropriate.
+             */
+            if ((mctx->sc->enabled == TRUE) &&
+                (mctx->sc->server) &&
+                (mctx->sc->server->nickname == NULL)) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                    "NSSEngine on; no certificate nickname provided by NSSNickname.");
+            }
+
+            if ((mctx->sc->proxy_enabled == TRUE) &&
+                (mctx->sc->proxy) &&
+                (mctx->sc->proxy->nickname == NULL)) {
+                ap_log_error(APLOG_MARK, APLOG_ERR, 0, s,
+                    "NSSProxyEngine on; no certificate nickname provided by NSSProxyNickname.");
+            }
+
             nss_die();
         }
 
         nss_init_certificate(s, mctx->nickname, &mctx->servercert,
                              &mctx->serverkey, &mctx->serverKEAType,
-                             mctx->model, mctx->enforce);
+                             mctx->model, mctx->enforce, clist);
 #ifdef NSS_ENABLE_ECC
         nss_init_certificate(s, mctx->eccnickname, &mctx->eccservercert,
                              &mctx->eccserverkey, &mctx->eccserverKEAType,
-                             mctx->model, mctx->enforce);
+                             mctx->model, mctx->enforce, clist);
 #endif
     }
 
@@ -1043,23 +1286,25 @@ static void nss_init_server_certs(server_rec *s,
 static void nss_init_proxy_ctx(server_rec *s,
                                 apr_pool_t *p,
                                 apr_pool_t *ptemp,
-                                SSLSrvConfigRec *sc)
+                                SSLSrvConfigRec *sc,
+                                const CERTCertList* clist)
 {
     nss_init_ctx(s, p, ptemp, sc->proxy);
 
-    nss_init_server_certs(s, p, ptemp, sc->proxy);
+    nss_init_server_certs(s, p, ptemp, sc->proxy, clist);
 }
 
 static void nss_init_server_ctx(server_rec *s,
                                 apr_pool_t *p,
                                 apr_pool_t *ptemp,
-                                SSLSrvConfigRec *sc)
+                                SSLSrvConfigRec *sc,
+                                const CERTCertList* clist)
 {
     nss_init_server_check(s, p, ptemp, sc->server);
 
     nss_init_ctx(s, p, ptemp, sc->server);
 
-    nss_init_server_certs(s, p, ptemp, sc->server);
+    nss_init_server_certs(s, p, ptemp, sc->server, clist);
 }
 
 /*
@@ -1068,18 +1313,19 @@ static void nss_init_server_ctx(server_rec *s,
 void nss_init_ConfigureServer(server_rec *s,
                               apr_pool_t *p,
                               apr_pool_t *ptemp,
-                              SSLSrvConfigRec *sc)
+                              SSLSrvConfigRec *sc,
+                              const CERTCertList* clist)
 {
     if (sc->enabled == TRUE) {
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
                      "Configuring server for SSL protocol");
-        nss_init_server_ctx(s, p, ptemp, sc);
+        nss_init_server_ctx(s, p, ptemp, sc, clist);
     }
 
     if (sc->proxy_enabled == TRUE) {
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, s,
                      "Enabling proxy.");
-        nss_init_proxy_ctx(s, p, ptemp, sc);
+        nss_init_proxy_ctx(s, p, ptemp, sc, clist);
     }
 }
 
@@ -1131,10 +1377,14 @@ void nss_init_Child(apr_pool_t *p, server_rec *base_server)
     nss_init_SSLLibrary(base_server);
 
     /* Configure all virtual servers */
+    CERTCertList* clist = PK11_ListCerts(PK11CertListUser, NULL);
     for (s = base_server; s; s = s->next) {
         sc = mySrvConfig(s);
         if (sc->server->servercert == NULL && NSS_IsInitialized())
-            nss_init_ConfigureServer(s, p, mc->ptemp, sc);
+            nss_init_ConfigureServer(s, p, mc->ptemp, sc, clist);
+    }
+    if (clist) {
+        CERT_DestroyCertList(clist);
     }
 
     /* 
@@ -1149,6 +1399,10 @@ apr_status_t nss_init_ModuleKill(void *data)
 {
     server_rec *base_server = (server_rec *)data;
     SSLModConfigRec *mc = myModConfig(base_server);
+
+    if (!NSS_IsInitialized()) {
+        return APR_SUCCESS;
+    }
 
     ap_log_error(APLOG_MARK, APLOG_INFO, 0, base_server,
         "Shutting down SSL Session ID Cache");
@@ -1168,9 +1422,6 @@ apr_status_t nss_init_ChildKill(void *data)
     server_rec *base_server = (server_rec *)data;
     server_rec *s;
     int shutdown = 0;
-
-    /* Clear any client-side session cache data */
-    SSL_ClearSessionCache();
 
     /*
      * Free the non-pool allocated structures
@@ -1214,6 +1465,9 @@ apr_status_t nss_init_ChildKill(void *data)
     }
 
     if (shutdown) {
+        /* Clear any client-side session cache data */
+        SSL_ClearSessionCache();
+
         if (CERT_DisableOCSPDefaultResponder(CERT_GetDefaultCertDB())
             != SECSuccess) {
             ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
@@ -1323,9 +1577,8 @@ cert_IsNewer(CERTCertificate *certa, CERTCertificate *certb)
  * newest, valid server certificate.
  */
 static CERTCertificate*
-FindServerCertFromNickname(const char* name)
+FindServerCertFromNickname(const char* name, const CERTCertList* clist)
 {
-    CERTCertList* clist;
     CERTCertificate* bestcert = NULL;
 
     CERTCertListNode *cln;
@@ -1334,8 +1587,6 @@ FindServerCertFromNickname(const char* name)
 
     if (name == NULL)
         return NULL;
-
-    clist = PK11_ListCerts(PK11CertListUser, NULL);
 
     for (cln = CERT_LIST_HEAD(clist); !CERT_LIST_END(cln,clist);
         cln = CERT_LIST_NEXT(cln)) {
@@ -1400,9 +1651,6 @@ FindServerCertFromNickname(const char* name)
     }
     if (bestcert) {
         bestcert = CERT_DupCertificate(bestcert);
-    }
-    if (clist) {
-        CERT_DestroyCertList(clist);
     }
     return bestcert;
 }

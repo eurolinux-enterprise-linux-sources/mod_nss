@@ -1,6 +1,17 @@
----  mod_nss-1.0/gencert.in	2006-06-20 22:43:33.000000000 -0400
-+++  mod_nss-1.0/gencert.in.orig	2006-06-20 22:57:08.000000000 -0400
-@@ -82,12 +82,11 @@
+From 770139456144c576335f407f990f14129e70d4c2 Mon Sep 17 00:00:00 2001
+From: Rob Crittenden <rcritten@redhat.com>
+Date: Thu, 20 Feb 2014 17:22:32 -0500
+Subject: [PATCH] Modify gencert to create a password-less database
+
+---
+ gencert.in | 9 ++-------
+ 1 file changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/gencert.in b/gencert.in
+index f51ee3e..dd3e0c3 100755
+--- a/gencert.in
++++ b/gencert.in
+@@ -82,12 +82,11 @@ fi
  
  DEST=$1
  
@@ -15,7 +26,7 @@
  echo "#####################################################################"
  $CERTUTIL -N -d $DEST -f $DEST/pw.txt
  
-@@ -183,8 +182,4 @@
+@@ -183,8 +182,4 @@ echo "#####################################################################"
  rm $DEST/pw.txt
  rm $DEST/noise
  
@@ -24,3 +35,6 @@
 -echo ""
 -
  exit 0
+-- 
+1.7.11.7
+

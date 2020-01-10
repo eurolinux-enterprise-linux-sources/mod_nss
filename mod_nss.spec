@@ -1,20 +1,26 @@
+%{!?_httpd_apxs:       %{expand: %%global _httpd_apxs       %%{_sbindir}/apxs}}
+%{!?_httpd_confdir:    %{expand: %%global _httpd_confdir    %%{_sysconfdir}/httpd/conf.d}}
+%{!?_httpd_mmn: %{expand: %%global _httpd_mmn %%(cat %{_includedir}/httpd/.mmn 2>/dev/null || echo 0-0)}}
+
 Name: mod_nss
-Version: 1.0.8
-Release: 21%{?dist}
+Version: 1.0.10
+Release: 1%{?dist}
 Summary: SSL/TLS module for the Apache HTTP server
 Group: System Environment/Daemons
 License: ASL 2.0
-URL: http://directory.fedoraproject.org/wiki/Mod_nss
-Source0: http://directory.fedoraproject.org/sources/%{name}-%{version}.tar.gz
-Source1: gencert.8
+URL: https://fedorahosted.org/mod_nss/
+Source: http://fedorahosted.org/released/mod_nss/%{name}-%{version}.tar.gz
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
+
 BuildRequires: nspr-devel >= 4.10.2, nss-devel >= 3.15.0.0
 BuildRequires: httpd-devel >= 2.2.15-24, apr-devel, apr-util-devel
 BuildRequires: pkgconfig
-Requires(pre): httpd >= 2.2.15-24
-Requires: %{_libdir}/libnssckbi.so
-Requires: nss >= 3.15.0.0
-Requires: nss-tools
+BuildRequires: autoconf
+BuildRequires: automake
+BuildRequires: libtool
+Requires: httpd-mmn = %{_httpd_mmn}
+Requires(post): httpd, nss-tools
+Requires: nss%{?_isa} >= 3.15.0.0
 # When the system 'nss' was bumped to version 3.15, an error was
 # exposed in 'nss-softokn'.  Consequently, since we needed to
 # increment the 'nss' dependency to coincide with the system
@@ -24,29 +30,17 @@ Requires: nss-tools
 # Admin server segfault when configuration DS configured on
 # SSL port'.
 Requires: nss-softokn >= 3.14.3-11
+# Although the following change reverses the desire of Bugzilla Bug #601939, it
+# was provided to suppress the dangling symlink warning of Bugzilla Bug #906089
+# as exposed via 'rpmlint'.
+Requires: %{_libdir}/libnssckbi.so
+
 # Change configuration to not conflict with mod_ssl
 Patch1: mod_nss-conf.patch
 # Generate a password-less NSS database
 Patch2: mod_nss-gencert.patch
-# Properly set blocking status when no data is available
-Patch3: mod_nss-wouldblock.patch
-# Add options for new negotation API
-Patch4: mod_nss-negotiate.patch
-Patch5: mod_nss-reverseproxy.patch
-#Patch6: mod_nss-PK11_ListCerts.patch
-Patch6: mod_nss-PK11_ListCerts_2.patch
-Patch7: mod_nss-reseterror.patch
-Patch8: mod_nss-lockpcache.patch
-Patch9: mod_nss-overlapping_memcpy.patch
-Patch10: mod_nss-array_overrun.patch
-Patch11: mod_nss-clientauth.patch
-#Patch12: mod_nss-no_shutdown_if_not_init.patch
-Patch13: mod_nss-no_shutdown_if_not_init_2.patch
-Patch14: mod_nss-proxyvariables.patch
-Patch15: mod_nss-tlsv1_1.patch
-Patch16: mod_nss-sslmultiproxy.patch
-Patch17: mod_nss-nssverifyclient.patch
-Patch18: mod_nss-eol_memmove.patch
+# Downgrade 'httpd 2.4' to 'httpd 2.2'
+Patch3: mod_nss-downgrade_httpd_2.4_to_httpd_2.2.patch
 
 %description
 The mod_nss module provides strong cryptography for the Apache Web
@@ -58,23 +52,7 @@ security library.
 %setup -q
 %patch1 -p1 -b .conf
 %patch2 -p1 -b .gencert
-%patch3 -p1 -b .wouldblock
-%patch4 -p1 -b .negotiate
-%patch5 -p1 -b .reverseproxy
-#%patch6 -p1 -b .PK11_ListCerts
-%patch6 -p1 -b .PK11_ListCerts_2
-%patch7 -p1 -b .reseterror
-%patch8 -p1 -b .lockpcache
-%patch9 -p1 -b .overlapping_memcpy
-%patch10 -p1 -b .array_overrun.patch
-%patch11 -p1 -b .clientauth.patch
-#%patch12 -p1 -b .no_shutdown_if_not_init.patch
-%patch13 -p1 -b .no_shutdown_if_not_init_2.patch
-%patch14 -p1 -b .proxyvariables.patch
-%patch15 -p1 -b .tlsv1_1.patch
-%patch16 -p1 -b .sslmultiproxy
-%patch17 -p1 -b .nssverifyclient
-%patch18 -p1 -b .eol_memmove
+%patch3 -p1 -b .downgrade_httpd_2.4_to_httpd_2.2
 
 # Touch expression parser sources to prevent regenerating it
 touch nss_expr_*.[chyl]
@@ -82,7 +60,9 @@ touch nss_expr_*.[chyl]
 %build
 
 CFLAGS="$RPM_OPT_FLAGS"
-export CFLAGS
+APXS=%{_httpd_apxs}
+
+export CFLAGS APXS
 
 NSPR_INCLUDE_DIR=`/usr/bin/pkg-config --variable=includedir nspr`
 NSPR_LIB_DIR=`/usr/bin/pkg-config --variable=libdir nspr`
@@ -90,6 +70,9 @@ NSPR_LIB_DIR=`/usr/bin/pkg-config --variable=libdir nspr`
 NSS_INCLUDE_DIR=`/usr/bin/pkg-config --variable=includedir nss`
 NSS_LIB_DIR=`/usr/bin/pkg-config --variable=libdir nss`
 
+NSS_BIN=`/usr/bin/pkg-config --variable=exec_prefix nss`
+
+autoreconf -i -f
 %configure \
     --with-nss-lib=$NSS_LIB_DIR \
     --with-nss-inc=$NSS_INCLUDE_DIR \
@@ -106,23 +89,33 @@ make %{?_smp_mflags} all
 rm -rf $RPM_BUILD_ROOT
 
 mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/httpd/conf
-mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/httpd/conf.d
+mkdir -p $RPM_BUILD_ROOT%{_httpd_confdir}
 mkdir -p $RPM_BUILD_ROOT%{_libdir}/httpd/modules
+mkdir -p $RPM_BUILD_ROOT%{_libexecdir}
 mkdir -p $RPM_BUILD_ROOT%{_sbindir}
 mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/httpd/alias
-mkdir -p $RPM_BUILD_ROOT%{_mandir}/man8/
+mkdir -p $RPM_BUILD_ROOT%{_mandir}/man8
 
-install -m 644 nss.conf $RPM_BUILD_ROOT%{_sysconfdir}/httpd/conf.d/
+install -m 644 gencert.8 $RPM_BUILD_ROOT%{_mandir}/man8/
+install -m 644 nss_pcache.8 $RPM_BUILD_ROOT%{_mandir}/man8/
+
+install -m 644 nss.conf $RPM_BUILD_ROOT%{_httpd_confdir}
+
 install -m 755 .libs/libmodnss.so $RPM_BUILD_ROOT%{_libdir}/httpd/modules/
-install -m 755 nss_pcache $RPM_BUILD_ROOT%{_sbindir}/
+install -m 755 nss_pcache $RPM_BUILD_ROOT%{_libexecdir}/
+# Provide a compatibility link to prevent disruption of customized deployments.
+#
+#     NOTE:  This link may be deprecated in a future release of 'mod_nss'.
+#
+ln -s %{_libexecdir}/nss_pcache $RPM_BUILD_ROOT%{_sbindir}/nss_pcache
 install -m 755 gencert $RPM_BUILD_ROOT%{_sbindir}/
-install -m 644 $RPM_SOURCE_DIR/gencert.8 $RPM_BUILD_ROOT%{_mandir}/man8/gencert.8
-gzip $RPM_BUILD_ROOT%{_mandir}/man8/gencert.8
 ln -s ../../../%{_libdir}/libnssckbi.so $RPM_BUILD_ROOT%{_sysconfdir}/httpd/alias/
 touch $RPM_BUILD_ROOT%{_sysconfdir}/httpd/alias/secmod.db
 touch $RPM_BUILD_ROOT%{_sysconfdir}/httpd/alias/cert8.db
 touch $RPM_BUILD_ROOT%{_sysconfdir}/httpd/alias/key3.db
 touch $RPM_BUILD_ROOT%{_sysconfdir}/httpd/alias/install.log
+
+perl -pi -e "s:$NSS_LIB_DIR:$NSS_BIN:" $RPM_BUILD_ROOT%{_sbindir}/gencert
 
 %clean
 rm -rf $RPM_BUILD_ROOT
@@ -130,7 +123,7 @@ rm -rf $RPM_BUILD_ROOT
 %post
 umask 077
 
-if [ "$1" -ge 1 ] ; then
+if [ "$1" -eq 1 ] ; then
     if [ ! -e %{_sysconfdir}/httpd/alias/key3.db ]; then
         %{_sbindir}/gencert %{_sysconfdir}/httpd/alias > %{_sysconfdir}/httpd/alias/install.log 2>&1
     fi
@@ -143,7 +136,8 @@ fi
 %files
 %defattr(-,root,root,-)
 %doc README LICENSE docs/mod_nss.html
-%config(noreplace) %{_sysconfdir}/httpd/conf.d/nss.conf
+%{_mandir}/man8/*
+%config(noreplace) %{_httpd_confdir}/nss.conf
 %{_libdir}/httpd/modules/libmodnss.so
 %dir %{_sysconfdir}/httpd/alias/
 %ghost %attr(0640,root,apache) %config(noreplace) %{_sysconfdir}/httpd/alias/secmod.db
@@ -151,11 +145,14 @@ fi
 %ghost %attr(0640,root,apache) %config(noreplace) %{_sysconfdir}/httpd/alias/key3.db
 %ghost %config(noreplace) %{_sysconfdir}/httpd/alias/install.log
 %{_sysconfdir}/httpd/alias/libnssckbi.so
+%{_libexecdir}/nss_pcache
 %{_sbindir}/nss_pcache
 %{_sbindir}/gencert
-%{_mandir}/man8/gencert.8.gz
 
 %changelog
+* Thu Jan 22 2015 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-1
+- Resolves: rhbz #1166316 - Rebase mod_nss to 1.0.10 to support TLSv1.2
+
 * Thu Jun  5 2014 Matthew Harmsen <mharmsen@redhat.com> - 1.0.8-21
 - Bumped version build/runtime requirements for 'nspr' and 'nss'
 - Added runtime dependency for 'nss-softokn'

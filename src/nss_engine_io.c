@@ -123,13 +123,13 @@ static int char_buffer_read(char_buffer_t *buffer, char *in, int inl)
 
     if (buffer->length > inl) {
         /* we have have enough to fill the caller's buffer */
-        memcpy(in, buffer->value, inl);
+        memmove(in, buffer->value, inl);
         buffer->value += inl;
         buffer->length -= inl;
     }
     else {
         /* swallow remainder of the buffer */
-        memcpy(in, buffer->value, buffer->length);
+        memmove(in, buffer->value, buffer->length);
         inl = buffer->length;
         buffer->value = NULL;
         buffer->length = 0;
@@ -259,7 +259,8 @@ nspr_filter_in_read(PRFileDesc *fd, void *in, PRInt32 inlen)
          */
         if (APR_STATUS_IS_EAGAIN(inctx->rc) || APR_STATUS_IS_EINTR(inctx->rc)
                || (inctx->rc == APR_SUCCESS && APR_BRIGADE_EMPTY(inctx->bb))) {
-            return 0;
+            PR_SetError(PR_WOULD_BLOCK_ERROR, 0);
+            return -1;
         }
 
         if (inctx->rc != APR_SUCCESS) {
@@ -277,6 +278,7 @@ nspr_filter_in_read(PRFileDesc *fd, void *in, PRInt32 inlen)
 
     if (APR_STATUS_IS_EAGAIN(inctx->rc)
             || APR_STATUS_IS_EINTR(inctx->rc)) {
+        PR_SetError(PR_WOULD_BLOCK_ERROR, 0);
         return (int)inl;
     }
 
@@ -347,6 +349,7 @@ static apr_status_t nss_io_input_read(nspr_filter_in_ctx_t *inctx,
             break;
         }
 
+        PR_SetError(0, 0);
         rc = PR_Read(inctx->filter_ctx->pssl, buf + bytes, wanted - bytes);
 
         if (rc > 0) {
@@ -618,13 +621,13 @@ static apr_status_t nss_filter_io_shutdown(nss_filter_ctx_t *filter_ctx,
     PR_Close(ssl);
 
     /* log the fact that we've closed the connection */
-    if (c->base_server->loglevel >= APLOG_INFO) {
+    if (c->base_server->log.level >= APLOG_INFO) {
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, c->base_server,
                      "Connection to child %ld closed "
                      "(server %s, client %s)",
                      c->id,
                      nss_util_vhostid(c->pool, c->base_server),
-                     c->remote_ip ? c->remote_ip : "unknown");
+                     c->client_ip ? c->client_ip : "unknown");
     }
 
     /* deallocate the SSL connection */
@@ -1162,7 +1165,7 @@ static PRStatus PR_CALLBACK nspr_filter_getpeername(PRFileDesc *fd, PRNetAddr *a
     filter_ctx = (nss_filter_ctx_t *)(fd->secret);
     c = filter_ctx->c;
 
-    return PR_StringToNetAddr(c->remote_ip, addr);
+    return PR_StringToNetAddr(c->client_ip, addr);
 }
 
 /* 
@@ -1352,23 +1355,16 @@ nss_AuthCertificate(void *arg, PRFileDesc *socket,
                   PRBool checksig, PRBool isServer)
 {
     SECStatus           status;
-    nss_filter_ctx_t   *filter_ctx;
 
     if (!arg || !socket) {
         return SECFailure;
     }
 
-    filter_ctx = (nss_filter_ctx_t *)(socket->lower->secret);
-
     status = SSL_AuthCertificate(arg, socket, checksig, isServer);
 
-    if (status == SECSuccess) {
-        conn_rec *c = filter_ctx->c;
-        SSLConnRec *sslconn = myConnConfig(c);
-
-        sslconn->client_cert = SSL_PeerCertificate(socket);
-        sslconn->client_dn = NULL;
-    }
+    /* The certificate is copied to sslconn->client_cert in
+     * nss_hook_ReadReq()
+     */
 
     return status;
 }

@@ -73,7 +73,7 @@ int nss_hook_ReadReq(request_rec *r)
     /*
      * Log information about incoming HTTPS requests
      */
-    if (r->server->loglevel >= APLOG_INFO && ap_is_initial_req(r)) {
+    if (r->server->log.level >= APLOG_INFO && ap_is_initial_req(r)) {
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
                      "%s HTTPS request received for child %ld (server %s)",
                      (r->connection->keepalives <= 0 ?
@@ -83,6 +83,11 @@ int nss_hook_ReadReq(request_rec *r)
                      r->connection->id,
                      nss_util_vhostid(r->pool, r->server));
     }
+
+    if (sslconn->client_cert != NULL)
+        CERT_DestroyCertificate(sslconn->client_cert);
+    sslconn->client_cert = SSL_PeerCertificate(ssl);
+    sslconn->client_dn = NULL;
 
     return DECLINED;
 }
@@ -275,7 +280,7 @@ int nss_hook_Access(request_rec *r)
 
         if (verify == SSL_CVERIFY_REQUIRE) {
             SSL_OptionSet(ssl, SSL_REQUEST_CERTIFICATE, PR_TRUE);
-            SSL_OptionSet(ssl, SSL_REQUIRE_CERTIFICATE, SSL_REQUIRE_NO_ERROR);
+            SSL_OptionSet(ssl, SSL_REQUIRE_CERTIFICATE, SSL_REQUIRE_ALWAYS);
         } else if (verify == SSL_CVERIFY_OPTIONAL) {
             SSL_OptionSet(ssl, SSL_REQUEST_CERTIFICATE, PR_TRUE);
             SSL_OptionSet(ssl, SSL_REQUIRE_CERTIFICATE, SSL_REQUIRE_NEVER);
@@ -525,7 +530,7 @@ int nss_hook_Access(request_rec *r)
             ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
                          "Access to %s denied for %s "
                          "(requirement expression not fulfilled)",
-                         r->filename, r->connection->remote_ip);
+                         r->filename, r->connection->client_ip);
 
             ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
                          "Failed expression: %s", req->cpExpr);
@@ -626,8 +631,8 @@ int nss_hook_UserCheck(request_rec *r)
     }
 
     if (!sslconn->client_dn) {
-        char * cp = CERT_GetCommonName(&sslconn->client_cert->subject);
-        sslconn->client_dn = apr_pstrdup(r->connection->pool, cp);
+        char * cp = CERT_NameToAscii(&sslconn->client_cert->subject);
+        sslconn->client_dn = apr_pstrcat(r->connection->pool, "/", cp, NULL);
         PORT_Free(cp);
     }
 

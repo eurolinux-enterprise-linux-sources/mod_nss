@@ -1,9 +1,19 @@
+VERSION = 1.0.10
+
 ## This is the shared library to be built
 lib_LTLIBRARIES = libmodnss.la
 
 bin_PROGRAMS = nss_pcache
 
 nss_pcache_SOURCES = nss_pcache.c
+
+man8_MANS =				\
+	gencert.8			\
+	nss_pcache.8			\
+	$(NULL)
+
+install-data-hook:
+	@for i in $(man8_MANS) ; do gzip -f $(DESTDIR)$(man8dir)/$$i ; done
 
 ## Define the source file for the module
 libmodnss_la_SOURCES = mod_nss.c nss_engine_config.c nss_engine_init.c nss_engine_io.c nss_engine_kernel.c nss_engine_log.c nss_engine_pphrase.c nss_engine_vars.c nss_expr.c nss_expr_eval.c nss_expr_parse.y nss_expr_scan.l nss_util.c nss_engine_rand.c
@@ -30,7 +40,7 @@ install-libLTLIBRARIES: libmodnss.la
 		mv @apache_conf@/../conf.d/ssl.conf @apache_conf@/../conf.d/ssl.conf.old; \
 	    fi \
 	else \
-	    if [ ! -f @apache_conf@/ssl.conf ]; then \
+	    if [ -f @apache_conf@/ssl.conf ]; then \
 		mv @apache_conf@/ssl.conf @apache_conf@/ssl.conf.old; \
 	    fi \
 	fi
@@ -70,3 +80,26 @@ LTCOMPILE = $(LIBTOOL) --mode=compile $(CC) $(DEFS) \
 
 LINK = $(LIBTOOL) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
 	$(AM_LDFLAGS) $(LDFLAGS) -o $@
+
+MAINTAINERCLEANFILES =		\
+	*~			\
+	Makefile.in		\
+	aclocal.m4		\
+	config.guess		\
+	config.sub		\
+	configure		\
+	depcomp			\
+	install-sh		\
+	ltmain.sh		\
+	missing			\
+	ylwrap
+
+EXTRA_DIST = *.h *.8 LICENSE test docs
+
+check:
+	cd test;	\
+	./setup.sh;	\
+	nosetests -v;	\
+	cd ..
+
+.PHONY: all test clean

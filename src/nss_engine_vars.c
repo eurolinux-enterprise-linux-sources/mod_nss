@@ -39,11 +39,17 @@ static char *nss_var_lookup_nss_cert_verify(apr_pool_t *p, conn_rec *c);
 static char *nss_var_lookup_nss_cipher(apr_pool_t *p, conn_rec *c, char *var);
 static char *nss_var_lookup_nss_version(apr_pool_t *p, char *var);
 static char *nss_var_lookup_protocol_version(apr_pool_t *p, conn_rec *c);
+static char *ssl_var_lookup(apr_pool_t *p, server_rec *s, conn_rec *c, request_rec *r, char *var);
+
+static APR_OPTIONAL_FN_TYPE(ssl_is_https) *othermod_is_https;
+static APR_OPTIONAL_FN_TYPE(ssl_var_lookup) *othermod_var_lookup;
 
 static int nss_is_https(conn_rec *c)
 {
     SSLConnRec *sslconn = myConnConfig(c);
-    return sslconn && sslconn->ssl;
+
+    return (sslconn && sslconn->ssl)
+        || (othermod_is_https && othermod_is_https(c));
 }
 
 static int ssl_is_https(conn_rec *c) {
@@ -52,14 +58,17 @@ static int ssl_is_https(conn_rec *c) {
 
 void nss_var_register(void)
 {
+    /* Always register these mod_nss optional functions */
     APR_REGISTER_OPTIONAL_FN(nss_is_https);
     APR_REGISTER_OPTIONAL_FN(nss_var_lookup);
 
-    /* These can only be registered if mod_ssl is not loaded */
-    if (APR_RETRIEVE_OPTIONAL_FN(ssl_is_https) == NULL)
-        APR_REGISTER_OPTIONAL_FN(ssl_is_https);
-    if (APR_RETRIEVE_OPTIONAL_FN(ssl_var_lookup) == NULL)
-        APR_REGISTER_OPTIONAL_FN(ssl_var_lookup);
+    /* Save the state of any previously registered mod_ssl functions */
+    othermod_is_https = APR_RETRIEVE_OPTIONAL_FN(ssl_is_https);
+    othermod_var_lookup = APR_RETRIEVE_OPTIONAL_FN(ssl_var_lookup);
+
+    /* Always register these local mod_ssl optional functions */
+    APR_REGISTER_OPTIONAL_FN(ssl_is_https);
+    APR_REGISTER_OPTIONAL_FN(ssl_var_lookup);
 
     return;
 }
@@ -174,11 +183,25 @@ char *nss_var_lookup(apr_pool_t *p, server_rec *s, conn_rec *c, request_rec *r, 
      */
     if (result == NULL && c != NULL) {
         SSLConnRec *sslconn = myConnConfig(c);
-        if (strlen(var) > 4 && strcEQn(var, "SSL_", 4) 
-                 && sslconn && sslconn->ssl)
+
+        if (strlen(var) > 4 && strcEQn(var, "SSL_", 4)
+            && (!sslconn || !sslconn->ssl) && othermod_var_lookup) {
+            /* If mod_ssl is registered for this connection,
+             * pass any SSL_* variable through to the mod_ssl module
+             */
+            return othermod_var_lookup(p, s, c, r, var);
+        }
+
+        if (strlen(var) > 4 && strcEQn(var, "SSL_", 4)
+                 && sslconn && sslconn->ssl) {
             result = nss_var_lookup_ssl(p, c, var+4);
+#ifdef VAR_DEBUG
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                "%s: %s", var, result);
+#endif
+        }
         else if (strcEQ(var, "REMOTE_ADDR"))
-            result = c->remote_ip;
+            result = c->client_ip;
         else if (strcEQ(var, "HTTPS")) {
             if (sslconn && sslconn->ssl)
                 result = "on";
@@ -194,7 +217,7 @@ char *nss_var_lookup(apr_pool_t *p, server_rec *s, conn_rec *c, request_rec *r, 
         if (strlen(var) > 12 && strcEQn(var, "SSL_VERSION_", 12))
             result = nss_var_lookup_nss_version(p, var+12);
         else if (strcEQ(var, "SERVER_SOFTWARE"))
-            result = (char *)ap_get_server_version();
+            result = (char *)ap_get_server_banner();
         else if (strcEQ(var, "API_VERSION")) {
             result = apr_psprintf(p, "%d", MODULE_MAGIC_NUMBER);
             resdup = FALSE;
@@ -252,7 +275,7 @@ char *nss_var_lookup(apr_pool_t *p, server_rec *s, conn_rec *c, request_rec *r, 
     return result;
 }
 
-char *ssl_var_lookup(apr_pool_t *p, server_rec *s, conn_rec *c, request_rec *r, char *var) {
+static char *ssl_var_lookup(apr_pool_t *p, server_rec *s, conn_rec *c, request_rec *r, char *var) {
     return nss_var_lookup(p, s, c, r, var);
 }
 
@@ -722,8 +745,15 @@ static char *nss_var_lookup_protocol_version(apr_pool_t *p, conn_rec *c)
                 case SSL_LIBRARY_VERSION_3_0:
                     result = "SSLv3";
                     break;
-                case SSL_LIBRARY_VERSION_3_1_TLS:
+                case SSL_LIBRARY_VERSION_TLS_1_0:
+                    /* 'TLSv1' has been deprecated; specify 'TLSv1.0' */
                     result = "TLSv1";
+                    break;
+                case SSL_LIBRARY_VERSION_TLS_1_1:
+                    result = "TLSv1.1";
+                    break;
+                case SSL_LIBRARY_VERSION_TLS_1_2:
+                    result = "TLSv1.2";
                     break;
             }
         }

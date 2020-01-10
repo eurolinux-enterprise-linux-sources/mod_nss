@@ -1,5 +1,16 @@
---- mod_nss-1.0.6/nss.conf.in.orig	2006-10-20 11:08:42.000000000 -0400
-+++ mod_nss-1.0.6/nss.conf.in	2006-10-23 15:27:22.000000000 -0400
+From bc24e3c0a438a2b6f177227b3340b516c15292a8 Mon Sep 17 00:00:00 2001
+From: Rob Crittenden <rcritten@redhat.com>
+Date: Thu, 20 Feb 2014 17:21:41 -0500
+Subject: [PATCH] Configure nss.conf.in to match Fedora filesystem layout
+
+---
+ nss.conf.in | 18 ++++++++++--------
+ 1 file changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/nss.conf.in b/nss.conf.in
+index c941ecf..349a810 100644
+--- a/nss.conf.in
++++ b/nss.conf.in
 @@ -8,14 +8,16 @@
  # consult the online docs. You have been warned.  
  #
@@ -19,16 +30,7 @@
  
  ##
  ##  SSL Global Context
-@@ -40,7 +42,7 @@
- #   Pass Phrase Helper:
- #   This helper program stores the token password pins between
- #   restarts of Apache.
--NSSPassPhraseHelper @apache_bin@/nss_pcache
-+NSSPassPhraseHelper /usr/sbin/nss_pcache
- 
- #   Configure the SSL Session Cache. 
- #   NSSSessionCacheSize is the number of entries in the cache.
-@@ -68,17 +70,17 @@
+@@ -79,17 +81,17 @@ NSSRequireSafeNegotiation off
  ## SSL Virtual Host Context
  ##
  
@@ -50,7 +52,7 @@
  LogLevel warn
  
  #   SSL Engine Switch:
-@@ -113,7 +115,7 @@
+@@ -133,7 +135,7 @@ NSSNickname Server-Cert
  #   The NSS security database directory that holds the certificates and
  #   keys. The database consists of 3 files: cert8.db, key3.db and secmod.db.
  #   Provide the directory that these files exist.
@@ -59,7 +61,7 @@
  
  #   Database Prefix:
  #   In order to be able to store multiple NSS databases in one directory
-@@ -189,7 +191,7 @@
+@@ -209,7 +211,7 @@ NSSCertificateDatabase @apache_conf@
  <Files ~ "\.(cgi|shtml|phtml|php3?)$">
      NSSOptions +StdEnvVars
  </Files>
@@ -68,3 +70,6 @@
      NSSOptions +StdEnvVars
  </Directory>
  
+-- 
+1.7.11.7
+
