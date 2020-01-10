@@ -4,7 +4,7 @@
 
 Name: mod_nss
 Version: 1.0.10
-Release: 6%{?dist}
+Release: 9%{?dist}
 Summary: SSL/TLS module for the Apache HTTP server
 Group: System Environment/Daemons
 License: ASL 2.0
@@ -64,6 +64,12 @@ Patch12: mod_nss-shutdown-cache.patch
 # Allow specific FIPS protocols to be read in and processed from either of the
 # 'NSSProtocol' or 'NSSProxyProtocol' lists in the configuration file
 Patch13: mod_nss-specify_FIPS_protocols_in_protocol_list.patch
+# Cleanup nss_pcache semaphore on shutdown
+Patch14: mod_nss-clean-semaphore.patch
+# Fix SNI initialization issue
+Patch15: mod_nss-sni-initialization.patch
+# Add OCSP cache tuning
+Patch16: mod_nss-OCSP-cache-tuning.patch
 
 %description
 The mod_nss module provides strong cryptography for the Apache Web
@@ -86,6 +92,9 @@ security library.
 %patch11 -p1 -b .sni-noalert
 %patch12 -p1 -b .sighup
 %patch13 -p1 -b .FIPS_protocol_list
+%patch14 -p1 -b .clean_semaphore
+%patch15 -p1 -b .sni-initialization
+%patch16 -p1 -b .OCSP-cache-tuning
 
 # Touch expression parser sources to prevent regenerating it
 touch nss_expr_*.[chyl]
@@ -183,6 +192,21 @@ fi
 %{_sbindir}/gencert
 
 %changelog
+* Mon Nov  7 2016 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-9
+- Backported patch from Rob Crittenden
+- Bugzilla Bug #1390359 - foward port NSS OCSP cache settings (rcritten)
+
+* Thu Oct 20 2016 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-8
+- Resolves: rhbz #1379823 - mod_nss SNI serves incorrect certificate (rcritten)
+
+* Wed Aug 24 2016 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-7
+- Backported patch from Rob Crittenden
+- Clean up semaphore in nss_pcache on shutdown (#1364561)
+- Update clean semaphore patch to not close pipe twice and to
+  shutdown NSS database (#1364561)
+- Update clean semaphore patch to not free the pinList twice.
+  (#1364561)
+
 * Thu Feb 25 2016 Matthew Harmsen <mharmsen@redhat.com> - 1.0.10-6
 - Resolves: rhbz #1312052 - NSSProtocol is ignored when NSSFIPS is enabled.
 

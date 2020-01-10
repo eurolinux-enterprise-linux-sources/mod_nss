@@ -1,0 +1,285 @@
+diff -rupN mod_nss-1.0.10.orig/ChangeLog mod_nss-1.0.10/ChangeLog
+--- mod_nss-1.0.10.orig/ChangeLog	2014-10-17 08:14:24.000000000 -0700
++++ mod_nss-1.0.10/ChangeLog	2016-11-07 20:11:02.000000000 -0800
+@@ -1,3 +1,6 @@
++2016-10-31  Rob Crittenden <rcritten@redhat.com>
++    * Add OCSP caching and timeout tuning knobs
++
+ 2014-10-16  Rob Crittenden <rcritten@redhat.com
+     * Add support for enabling TLS v1.2
+     * Don't enable SSL 3 by default (CVE-2014-3566)
+diff -rupN mod_nss-1.0.10.orig/docs/mod_nss.html mod_nss-1.0.10/docs/mod_nss.html
+--- mod_nss-1.0.10.orig/docs/mod_nss.html	2016-11-07 14:29:11.000000000 -0800
++++ mod_nss-1.0.10/docs/mod_nss.html	2016-11-07 20:12:29.000000000 -0800
+@@ -505,6 +505,48 @@ Example</span><br>
+ <br>
+ <code>NSSOCSP on</code><br>
+ <br>
++<big><big>NSSOCSPTimeout</big></big><br>
++<br>
++Configure the maximum time to wait for an OCSP response in seconds.
++There are no constraints or special meanings for this value. The default
++is 60 seconds.
++<br>
++<br><span style="font-weight: bold;">
++Example</span><br>
++<br>
++<code>NSSOCSPTimeout 30</code><br>
++<br>
++<big><big>NSSOCSPCacheSize</big></big><br>
++<br>
++Configures the maximum number of entries in the OCSP cache. A value of
++-1 will disable the cache completely. A value of 0 configures an unlimited
++number of cache entries. The default is 1000.
++<br>
++<br><span style="font-weight: bold;">
++Example</span><br>
++<br>
++<code>NSSOCSPCacheSize 300</code><br>
++<br>
++<big><big>NSSOCSPMinCacheEntryDuration</big></big><br>
++<br>
++Configure the minimum amount of time an OCSP response is cached in seconds.
++The default is 3600 seconds (1 hour).
++<br>
++<br><span style="font-weight: bold;">
++Example</span><br>
++<br>
++<code>NSSOCSPMinCacheEntryDuration 30</code><br>
++<br>
++<big><big>NSSOCSPMaxCacheEntryDuration</big></big><br>
++<br>
++Configure the maximum amount of time an OCSP response is cached in seconds
++before being updated. The default is 86400 seconds (24 hours).
++<br>
++<br><span style="font-weight: bold;">
++Example</span><br>
++<br>
++<code>NSSOCSPMaxCacheEntryDuration 300</code><br>
++<br>
+ <big><big>NSSCipherSuite<br>
+ </big></big><br>
+ A space-separated list of the SSL ciphers used, with the prefix <code>+</code>
+diff -rupN mod_nss-1.0.10.orig/mod_nss.c mod_nss-1.0.10/mod_nss.c
+--- mod_nss-1.0.10.orig/mod_nss.c	2016-11-07 14:29:12.000000000 -0800
++++ mod_nss-1.0.10/mod_nss.c	2016-11-07 20:13:53.000000000 -0800
+@@ -63,6 +63,18 @@ static const command_rec nss_config_cmds[] = {
+     SSL_CMD_SRV(OCSP, FLAG,
+                 "OCSP (Online Certificate Status Protocol)"
+                 "(`on', `off')")
++    SSL_CMD_SRV(OCSPTimeout, TAKE1,
++                "OCSP Timeout"
++                "(`N' - Max number of seconds to wait for an OCSP response.)")
++    SSL_CMD_SRV(OCSPCacheSize, TAKE1,
++                "OCSP Cache size"
++                "(`N' - number of entries -1 for no cache)")
++    SSL_CMD_SRV(OCSPMinCacheEntryDuration, TAKE1,
++                "OCSP Minimum time until next fetch attempt"
++                "(`N' - Time in seconds)")
++    SSL_CMD_SRV(OCSPMaxCacheEntryDuration, TAKE1,
++                "OCSP Maximum time until next fetch attempt"
++                "(`N' - Time in seconds)")
+     SSL_CMD_SRV(OCSPDefaultResponder, FLAG,
+                 "Use a default OCSP Responder"
+                 "(`on', `off')")
+diff -rupN mod_nss-1.0.10.orig/mod_nss.h mod_nss-1.0.10/mod_nss.h
+--- mod_nss-1.0.10.orig/mod_nss.h	2016-11-07 14:29:12.000000000 -0800
++++ mod_nss-1.0.10/mod_nss.h	2016-11-07 20:16:42.000000000 -0800
+@@ -311,6 +311,10 @@ struct SSLSrvConfigRec {
+     const char      *ocsp_url;
+     const char      *ocsp_name;
+     BOOL             ocsp;
++    int              ocsp_timeout;
++    int              ocsp_cache_size;
++    int              ocsp_min_cache_entry_duration;
++    int              ocsp_max_cache_entry_duration;
+     BOOL             enabled;
+     BOOL             sni;
+     BOOL             strict_sni_vhost_check;
+@@ -399,6 +403,10 @@ const char *nss_cmd_NSSSNI(cmd_parms *, void *, int);
+ const char *nss_cmd_NSSStrictSNIVHostCheck(cmd_parms *, void *, int);
+ const char *nss_cmd_NSSEngine(cmd_parms *, void *, int);
+ const char *nss_cmd_NSSOCSP(cmd_parms *, void *, int);
++const char *nss_cmd_NSSOCSPTimeout(cmd_parms *, void *, const char *arg);
++const char *nss_cmd_NSSOCSPCacheSize(cmd_parms *, void *, const char *arg);
++const char *nss_cmd_NSSOCSPMinCacheEntryDuration(cmd_parms *, void *, const char *arg);
++const char *nss_cmd_NSSOCSPMaxCacheEntryDuration(cmd_parms *, void *, const char *arg);
+ const char *nss_cmd_NSSOCSPDefaultResponder(cmd_parms *, void *, int);
+ const char *nss_cmd_NSSOCSPDefaultURL(cmd_parms *, void *dcfg, const char *arg);
+ const char *nss_cmd_NSSOCSPDefaultName(cmd_parms *, void *, const char *arg);
+diff -rupN mod_nss-1.0.10.orig/nss_engine_config.c mod_nss-1.0.10/nss_engine_config.c
+--- mod_nss-1.0.10.orig/nss_engine_config.c	2016-11-07 14:29:13.000000000 -0800
++++ mod_nss-1.0.10/nss_engine_config.c	2016-11-07 20:20:17.000000000 -0800
+@@ -129,21 +129,25 @@ static SSLSrvConfigRec *nss_config_server_new(apr_pool_t *p)
+ {
+     SSLSrvConfigRec *sc = apr_palloc(p, sizeof(*sc));
+     
+-    sc->mc                          = NULL;
+-    sc->ocsp                        = UNSET;
+-    sc->ocsp_default                = UNSET;
+-    sc->ocsp_url                    = NULL;
+-    sc->ocsp_name                   = NULL;
+-    sc->fips                        = UNSET;
+-    sc->enabled                     = UNSET;
+-    sc->sni                         = UNSET;
+-    sc->strict_sni_vhost_check      = TRUE;
+-    sc->proxy_enabled               = UNSET;
+-    sc->vhost_id                    = NULL;  /* set during module init */
+-    sc->vhost_id_len                = 0;     /* set during module init */
+-    sc->proxy                       = NULL;
+-    sc->server                      = NULL;
+-    sc->proxy_ssl_check_peer_cn     = TRUE;
++    sc->mc                            = NULL;
++    sc->ocsp                          = UNSET;
++    sc->ocsp_timeout                  = 60;
++    sc->ocsp_cache_size               = 1000;
++    sc->ocsp_min_cache_entry_duration = 1*60*60L;
++    sc->ocsp_max_cache_entry_duration = 24*60*60L;
++    sc->ocsp_default                  = UNSET;
++    sc->ocsp_url                      = NULL;
++    sc->ocsp_name                     = NULL;
++    sc->fips                          = UNSET;
++    sc->enabled                       = UNSET;
++    sc->sni                           = TRUE;
++    sc->strict_sni_vhost_check        = TRUE;
++    sc->proxy_enabled                 = UNSET;
++    sc->vhost_id                      = NULL;  /* set during module init */
++    sc->vhost_id_len                  = 0;     /* set during module init */
++    sc->proxy                         = NULL;
++    sc->server                        = NULL;
++    sc->proxy_ssl_check_peer_cn       = TRUE;
+ 
+     modnss_ctx_init_proxy(sc, p);
+ 
+@@ -212,6 +216,10 @@ void *nss_config_server_merge(apr_pool_t *p, void *basev, void *addv) {
+ 
+     cfgMerge(mc, NULL);
+     cfgMergeBool(ocsp);
++    cfgMergeInt(ocsp_timeout);
++    cfgMergeInt(ocsp_cache_size);
++    cfgMergeInt(ocsp_min_cache_entry_duration);
++    cfgMergeInt(ocsp_max_cache_entry_duration);
+     cfgMergeBool(ocsp_default);
+     cfgMerge(ocsp_url, NULL);
+     cfgMerge(ocsp_name, NULL);
+@@ -374,6 +382,52 @@ const char *nss_cmd_NSSOCSP(cmd_parms *cmd, void *dcfg, int flag)
+     return NULL;
+ }
+ 
++const char *nss_cmd_NSSOCSPTimeout(cmd_parms *cmd, void *dcfg, const char *arg)
++{
++
++    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
++
++    sc->ocsp_timeout = atoi(arg);
++
++    return NULL;
++}
++
++const char *nss_cmd_NSSOCSPCacheSize(cmd_parms *cmd, void *dcfg, const char *arg)
++{
++
++    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
++
++    sc->ocsp_cache_size = atoi(arg);
++
++    if (sc->ocsp_cache_size < -1) {
++        return "NSSOCSPCacheSize: must be >= -1";
++    }
++
++    return NULL;
++}
++
++const char *nss_cmd_NSSOCSPMinCacheEntryDuration(cmd_parms *cmd, void *dcfg,
++                                                 const char *arg)
++{
++
++    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
++
++    sc->ocsp_min_cache_entry_duration = atoi(arg);
++
++    return NULL;
++}
++
++const char *nss_cmd_NSSOCSPMaxCacheEntryDuration(cmd_parms *cmd, void *dcfg,
++                                                 const char *arg)
++{
++
++    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
++
++    sc->ocsp_max_cache_entry_duration = atoi(arg);
++
++    return NULL;
++}
++
+ const char *nss_cmd_NSSOCSPDefaultResponder(cmd_parms *cmd, void *dcfg, int flag)
+ {
+     SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
+diff -rupN mod_nss-1.0.10.orig/nss_engine_init.c mod_nss-1.0.10/nss_engine_init.c
+--- mod_nss-1.0.10.orig/nss_engine_init.c	2016-11-07 14:29:13.000000000 -0800
++++ mod_nss-1.0.10/nss_engine_init.c	2016-11-07 20:24:06.000000000 -0800
+@@ -182,6 +182,18 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
+         }
+     }
+ 
++    if (ocspenabled) {
++        if (sc->ocsp_min_cache_entry_duration > sc->ocsp_max_cache_entry_duration)  {
++            ap_log_error(APLOG_MARK,APLOG_ERR, 0, base_server,
++                "OCSP minimum cache duration must be less than the maximum.");
++
++            if (mc->nInitCount == 1)
++                nss_die();
++            else
++                return;
++        }
++    }
++
+     /* We need to be in the same directory as libnssckbi.so to load the
+      * root certificates properly.
+      */
+@@ -267,10 +279,45 @@ static void nss_init_SSLLibrary(server_rec *base_server, apr_pool_t *p)
+     }
+ 
+     if (ocspenabled) {
++        SECStatus rv;
++
+         CERT_EnableOCSPChecking(CERT_GetDefaultCertDB());
+         ap_log_error(APLOG_MARK, APLOG_INFO, 0, base_server,
+             "OCSP is enabled.");
+ 
++        /* Set desired OCSP Cache Settings, values already checked. */
++        rv = CERT_OCSPCacheSettings((PRInt32)sc->ocsp_cache_size,
++                                    (PRUint32)sc->ocsp_min_cache_entry_duration,
++                                    (PRUint32)sc->ocsp_max_cache_entry_duration);
++
++        if (rv == SECFailure) {
++            ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
++                        "Unable to set the OCSP cache settings.");
++            nss_log_nss_error(APLOG_MARK, APLOG_ERR, base_server);
++            if (mc->nInitCount == 1)
++                nss_die();
++            else
++                return;
++        } else {
++            ap_log_error(APLOG_MARK, APLOG_INFO, 0, base_server,
++                         "OCSP cache size %d, duration %d - %d seconds.", sc->ocsp_cache_size, sc->ocsp_min_cache_entry_duration, sc->ocsp_max_cache_entry_duration);
++        }
++
++        /* Set OCSP timeout. */
++        rv = CERT_SetOCSPTimeout((PRUint32) sc->ocsp_timeout);
++        if (rv == SECFailure) {
++            ap_log_error(APLOG_MARK, APLOG_ERR, 0, base_server,
++                         "Unable to set the OCSP timeout. (this shouldn't happen.");
++            nss_log_nss_error(APLOG_MARK, APLOG_ERR, base_server);
++            if (mc->nInitCount == 1)
++                nss_die();
++            else
++                return;
++        } else {
++            ap_log_error(APLOG_MARK, APLOG_INFO, 0, base_server,
++                         "OCSP timeout set to %d.", sc->ocsp_timeout);
++        }
++
+         /* We ensure that ocspname and ocspurl are not NULL above. */
+         if (ocspdefault) {
+             SECStatus sv;

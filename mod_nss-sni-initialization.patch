@@ -1,0 +1,28 @@
+diff --git a/nss_engine_config.c b/nss_engine_config.c
+index d198fc3..d3b0eea 100644
+--- a/nss_engine_config.c
++++ b/nss_engine_config.c
+@@ -135,7 +135,7 @@ static SSLSrvConfigRec *nss_config_server_new(apr_pool_t *p)
+     sc->ocsp_name                   = NULL;
+     sc->fips                        = UNSET;
+     sc->enabled                     = UNSET;
+-    sc->sni                         = FALSE;
++    sc->sni                         = UNSET;
+     sc->strict_sni_vhost_check      = TRUE;
+     sc->proxy_enabled               = UNSET;
+     sc->vhost_id                    = NULL;  /* set during module init */
+diff --git a/nss_engine_init.c b/nss_engine_init.c
+index 131fcd7..fd11420 100644
+--- a/nss_engine_init.c
++++ b/nss_engine_init.c
+@@ -404,6 +404,10 @@ int nss_init_Module(apr_pool_t *p, apr_pool_t *plog,
+             sc->ocsp = FALSE;
+         }
+ 
++        if (sc->sni == UNSET) {
++            sc->sni = FALSE;
++        }
++
+         if (sc->ocsp_default == UNSET) {
+             sc->ocsp_default = FALSE;
+         }
