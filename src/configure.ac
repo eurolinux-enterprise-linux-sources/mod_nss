@@ -1,12 +1,16 @@
 # Required initializer
-AC_INIT
+AC_INIT([mod_nss],[1.0.14])
+
+m4_include([acinclude.m4])
 
 # Automake initialization
-AM_INIT_AUTOMAKE(mod_nss, 1.0)
+AM_INIT_AUTOMAKE
 
 # Add a test for a compiler.
 AC_PROG_CC
+AM_PROG_CC_C_O
 AM_PROG_LIBTOOL
+AC_CONFIG_HEADERS([config.h])
 
 # Check for header files
 AC_HEADER_STDC
@@ -238,6 +242,31 @@ fi
 
 nspr_dir=`echo "$nspr_lib" | sed 's/\/lib[[/]]*$//' | sed 's/-L//'`
 nss_dir=`echo "$nss_lib" | sed 's/\/lib[[/]]*$//' | sed 's/-L//'`
+
+AX_CHECK_DEFINE(nss3/sslproto.h, TLS_RSA_WITH_AES_128_GCM_SHA256, gcm=$enableval, gcm=no)
+if test "$gcm" = yes; then
+   extra_cppflags="$extra_cppflags -DENABLE_GCM"
+   echo "ENABLE_GCM=1" > test/variable.py
+else
+   echo "ENABLE_GCM=0" > test/variable.py
+fi
+
+AX_CHECK_DEFINE(nss3/sslproto.h, TLS_RSA_WITH_AES_256_GCM_SHA384, sha384=$enableval, sha384=no)
+if test "$sha384" = yes; then
+   extra_cppflags="$extra_cppflags -DENABLE_SHA384"
+   echo "ENABLE_SHA384=1" >> test/variable.py
+else
+   echo "ENABLE_SHA384=0" >> test/variable.py
+fi
+
+CPPFLAGS="$CPPFLAGS $nspr_inc"
+AX_CHECK_DEFINE(nss3/ssl.h, SSL_ENABLE_SERVER_DHE, server_dhe=yes, server_dhe=no)
+if test "$server_dhe" = yes; then
+   extra_cppflags="$extra_cppflags -DENABLE_SERVER_DHE"
+   echo "ENABLE_SERVER_DHE=1" >> test/variable.py
+else
+   echo "ENABLE_SERVER_DHE=0" >> test/variable.py
+fi
 
 # Substitute values 
 AC_SUBST(APXS)

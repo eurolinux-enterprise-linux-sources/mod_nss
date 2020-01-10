@@ -1,0 +1,67 @@
+From e50c94c0e52659633418d590ac68001e44fb5edf Mon Sep 17 00:00:00 2001
+From: Rob Crittenden <rcritten@redhat.com>
+Date: Wed, 10 May 2017 12:32:34 -0400
+Subject: [PATCH] Update nss_pcache.8 man page to drop directory and prefix
+
+I missed updating this when I made the change to drop sharing the
+NSS database between Apache and nss_pcache.
+---
+ nss_pcache.8 | 31 ++-----------------------------
+ 1 file changed, 2 insertions(+), 29 deletions(-)
+
+diff --git a/nss_pcache.8 b/nss_pcache.8
+index 1641f48..5e9743f 100644
+--- a/nss_pcache.8
++++ b/nss_pcache.8
+@@ -14,12 +14,12 @@
+ .\"
+ .\" Author: Rob Crittenden <rcritten@redhat.com>
+ .\"
+-.TH "nss_pcache" "8" "Jul 1 2013" "Rob Crittenden" ""
++.TH "nss_pcache" "8" "May 10 2017" "Rob Crittenden" ""
+ .SH "NAME"
+ nss_pcache \- Helper program used to store token password pins
+ 
+ .SH "SYNOPSIS"
+-nss_pcache <semid> <fips on/off> <directory> [prefix]
++nss_pcache <semid> <fips on/off>
+ 
+ .SH "DESCRIPTION"
+ A helper program used by the Apache \fBhttpd\fP mod_nss plug-in to store the NSS PKCS #11 token password pins between restarts of Apache.
+@@ -55,33 +55,6 @@ tab(;);
+ ll,ll.
+ ;NSSFIPS on
+ .TE
+-.TP
+-.B <directory>
+-Specifies the destination directory of the NSS databases that will be associated with this executable specified by the following entry in \fB/etc/httpd/conf.d/nss.conf\fP:
+-.IP
+-.TS
+-tab(;);
+-ll,ll.
+-;#   Server Certificate Database:
+-;#   The NSS security database directory that holds the
+-;#   certificates and keys. The database consists
+-;#   of 3 files: cert8.db, key3.db and secmod.db.
+-;#   Provide the directory that these files exist.
+-;NSSCertificateDatabase /etc/httpd/alias
+-.TE
+-.TP
+-.B [prefix]
+-Optional prefix to attach prior to the names of the NSS certificate and key databases contained in the directory referenced by the previous argument and specified by the following entry in \fB/etc/httpd/conf.d/nss.conf\fP (must be uncommented in order to be utilized):
+-.IP
+-.TS
+-tab(;);
+-ll,ll.
+-;#   Database Prefix:
+-;#   In order to be able to store multiple NSS databases
+-;#   in one directory they need unique names. This option
+-;#   sets the database prefix used for cert8.db and key3.db.
+-;#NSSDBPrefix my-prefix-
+-.TE
+ 
+ .SH BUGS
+ Report bugs to http://bugzilla.redhat.com.
+-- 
+2.9.3
+

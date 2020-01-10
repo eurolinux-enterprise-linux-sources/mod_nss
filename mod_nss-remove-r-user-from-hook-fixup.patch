@@ -1,0 +1,21 @@
+diff -rupN mod_nss-1.0.14.orig/nss_engine_kernel.c mod_nss-1.0.14/nss_engine_kernel.c
+--- mod_nss-1.0.14.orig/nss_engine_kernel.c	2016-04-15 12:27:59.000000000 -0600
++++ mod_nss-1.0.14/nss_engine_kernel.c	2016-06-27 13:18:09.571283114 -0600
+@@ -953,17 +953,6 @@ int nss_hook_Fixup(request_rec *r)
+     }
+ 
+     /*
+-     * Set r->user if requested
+-     */
+-    if (dc->szUserName) {
+-        val = nss_var_lookup(r->pool, r->server, r->connection,
+-                             r, (char *)dc->szUserName);
+-        if (val && val[0]) {
+-            r->user = val;
+-        }
+-    }
+-
+-    /*
+      * Annotate the SSI/CGI environment with standard SSL information
+      */
+     /* the always present HTTPS (=HTTP over SSL) flag! */

@@ -39,7 +39,11 @@ getFQDN() {
                 return
         fi
         defhost=`hostname` 
-        hosthost=`host $defhost | grep -v "not found" | awk '{print $1}'`
+        if [ -e /usr/bin/host -o -e /bin/host ]; then
+            hosthost=`host $defhost | grep -v "not found" | awk '{print $1}'`
+        else
+            hosthost=''
+        fi
         for host in $defhost $hosthost `hostname -f` `hostname -a` ; do
                 len=`echo $host | wc -c` 
                 if [ $len -gt $max ]; then
@@ -59,9 +63,10 @@ CA_CERTDN="CN=Certificate Shack, O=example.com, C=US"
 SERVER_CERTDN="CN=${FQDN}, O=example.com, C=US"
 ALPHA_CERTDN="E=alpha@${FQDN}, CN=Frank Alpha, UID=alpha, OU=People, O=example.com, C=US"
 BETA_CERTDN="E=beta@${FQDN}, CN=Anna Beta, UID=beta, OU=People, O=example.com, C=US"
+COLON_CERTDN="E=colon:user@${FQDN}, CN=Colon User, UID=colon, OU=People, O=example.com, C=US"
 
 # size of the keys
-KEYSIZE=1024
+KEYSIZE=2048
 
 # validity of the certs in months
 VALIDITY=48
@@ -75,7 +80,6 @@ then
     echo "usage: $0 <destdir>" 1>&2
     exit 1
 fi
-PREFIX=`echo $1 | cut -d: -f1`
 DEST=`echo $1 | cut -d: -f2`
 if [ ! -d $DEST -o ! -w $DEST ]
 then
@@ -84,8 +88,87 @@ then
 fi
 
 DBDIR=$1
+shift
+
+TEST=0
+SNI=0
+
+while [[ $# -ge 1 ]]
+do
+    key="$1"
+    case $key in
+        -s|--sni)
+            SNI="$2"
+            shift
+            ;;
+        -t|--test)
+            TEST=1
+            ;;
+        *)
+            echo "Unknown option $1"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+echo "TEST = $TEST"
+echo "SNI = $SNI"
 
 echo "httptest" > $DEST/pw.txt
+
+function generate_server_sni_cert {
+    hostname=$1
+
+    local SERVER_DN="CN=${hostname}, O=SNI, O=example.com, C=US"
+    local NICKNAME="Server-Cert-${hostname}"
+
+    echo ""
+    echo "#####################################################################"
+    echo "Generating $NICKNAME server certificate request"
+    echo "#####################################################################"
+    if [ -e /dev/urandom ]; then
+        (ps -elf; date; dd if=/dev/urandom count=1 bs=1024 2>/dev/null| tr -dc 'a-zA-Z0-9') > $DEST/noise
+    else
+        (ps -elf; date; dd if=/dev/random count=1 bs=128 2>/dev/null| tr -dc 'a-zA-Z0-9') > $DEST/noise
+    fi
+    $CERTUTIL -R -d $DBDIR \
+                -s "$SERVER_DN" \
+                -o $DEST/tmpcertreq \
+                -g $KEYSIZE \
+                -z $DEST/noise \
+                -f $DEST/pw.txt
+
+    echo ""
+    echo "#####################################################################"
+    echo "Generating $NICKNAME server certificate"
+    echo "#####################################################################"
+    let CERTSERIAL=CERTSERIAL+1
+    echo -e "2\n9\nn\n1\n9\nn\n" | \
+    $CERTUTIL -C -d $DBDIR \
+                -c cacert \
+                -i $DEST/tmpcertreq \
+                -o $DEST/tmpcert.der \
+                -m $CERTSERIAL \
+                -v $VALIDITY \
+                -f $DEST/pw.txt \
+                -1 \
+                -5 \
+                -8 $hostname
+
+    rm $DEST/tmpcertreq
+
+    echo ""
+    echo "#####################################################################"
+    echo "Importing $NICKNAME certificate into server cert DB"
+    echo "#####################################################################"
+    $CERTUTIL -A -d $DBDIR -n $NICKNAME \
+                -t u,u,u \
+                -i $DEST/tmpcert.der \
+                -f $DEST/pw.txt
+ 
+    rm $DEST/tmpcert.der
+}
 
 echo ""
 echo "#####################################################################"
@@ -115,7 +198,6 @@ $CERTUTIL -S -d $DBDIR -n cacert \
             -z $DEST/noise \
             -2 \
             -1 \
-            -5
 
 echo ""
 echo "#####################################################################"
@@ -136,7 +218,8 @@ $CERTUTIL -S -d $DBDIR -n alpha \
             -f $DEST/pw.txt \
             -z $DEST/noise \
             -1 \
-            -5
+            -5 \
+            -7 alpha@${FQDN}
 
 echo ""
 echo "#####################################################################"
@@ -157,7 +240,35 @@ $CERTUTIL -S -d $DBDIR -n beta \
             -f $DEST/pw.txt \
             -z $DEST/noise \
             -1 \
+            -5 \
+            -7 beta@${FQDN}
+
+if [ $TEST == 1 ]; then
+echo ""
+echo "#####################################################################"
+echo "Generating user certificate for \"colon\"."
+echo "#####################################################################"
+(ps -elf; date; netstat -a) > $DEST/noise
+let CERTSERIAL=CERTSERIAL+1
+# 0 2 9 n  -> Key usage: Key Encipherment, Digital Signature
+# 0 9 n  -> SSL Client
+echo -e "0\n2\n9\nn\n0\n9\nn\n" | \
+$CERTUTIL -S -d $DBDIR -n colon \
+            -s "$COLON_CERTDN" \
+            -c cacert \
+            -t u,pu,u \
+            -g $KEYSIZE \
+            -m $CERTSERIAL \
+            -v $VALIDITY \
+            -f $DEST/pw.txt \
+            -z $DEST/noise \
+            -1 \
             -5
+fi
+
+echo ""
+echo "#####################################################################"
+echo "Generating server certificate request"
 
 echo ""
 echo "#####################################################################"
@@ -185,7 +296,8 @@ $CERTUTIL -C -d $DBDIR \
             -v $VALIDITY \
             -f $DEST/pw.txt \
             -1 \
-            -5
+            -5 \
+            -8 $FQDN
 
 rm $DEST/tmpcertreq
 
@@ -199,6 +311,15 @@ $CERTUTIL -A -d $DBDIR -n Server-Cert \
             -f $DEST/pw.txt
 
 rm $DEST/tmpcert.der
+
+if [ $SNI -gt 0 ]; then
+    SNI=`expr $SNI + 1`
+    count=1
+    while test $count -lt $SNI ; do
+        generate_server_sni_cert www$count.example.com
+        count=`expr $count + 1`
+    done
+fi
 
 echo ""
 echo "#####################################################################"

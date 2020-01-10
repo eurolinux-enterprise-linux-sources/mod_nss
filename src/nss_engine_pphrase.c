@@ -19,6 +19,7 @@
 
 typedef struct {
     SSLModConfigRec *mc;
+    server_rec *s;
     PRInt32 retryCount;
 } pphrase_arg_t;
 
@@ -51,6 +52,7 @@ SECStatus nss_Init_Tokens(server_rec *s)
     parg = (pphrase_arg_t*)malloc(sizeof(*parg));
     parg->mc = mc;
     parg->retryCount = 0;
+    parg->s = s;
 
     PK11_SetPasswordFunc(nss_password_prompt);
 
@@ -100,12 +102,12 @@ SECStatus nss_Init_Tokens(server_rec *s)
                2. We'll get a bogus error message from nss_engine_init, -8053,
                   instead of -8177.
              */
-            return SECFailure; 
+            return SECFailure;
         }
         parg->retryCount = 0; /* reset counter to 0 for the next token */
         PK11_FreeSlot(slot);
     }
-    
+
     /*
      * reset NSS password callback to blank, so that the server won't prompt
      * again after initialization is done.
@@ -113,7 +115,7 @@ SECStatus nss_Init_Tokens(server_rec *s)
     PK11_SetPasswordFunc(nss_no_password);
 
     free(parg);
-    return status; 
+    return status;
 }
 
 /*
@@ -140,7 +142,7 @@ static char * nss_password_prompt(PK11SlotInfo *slot, PRBool retry, void *arg)
         }
     }
 
-    if ((parg->mc->nInitCount == 1) && (passwd != NULL)) {
+    if ((parg && parg->mc && parg->mc->nInitCount == 1) && (passwd != NULL)) {
         char buf[1024];
         apr_status_t rv;
         apr_size_t nBytes = 1024;
@@ -149,7 +151,7 @@ static char * nss_password_prompt(PK11SlotInfo *slot, PRBool retry, void *arg)
         snprintf(buf, 1024, "STOR\t%s\t%s", PK11_GetTokenName(slot), passwd);
         rv = apr_file_write_full(parg->mc->proc.in, buf, strlen(buf), NULL);
         if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, parg->s,
                 "Unable to write to pin store for slot: %s APR err: %d",  PK11_GetTokenName(slot), rv);
             nss_die();
         }
@@ -166,7 +168,7 @@ static char * nss_password_prompt(PK11SlotInfo *slot, PRBool retry, void *arg)
             res = atoi(buf);
         if (rv != APR_SUCCESS ||
            (res != PIN_SUCCESS && res != PIN_INCORRECTPW)) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, parg->s,
                 "Unable to read from pin store for slot: %s APR err: %d pcache: %d",  PK11_GetTokenName(slot), rv, res);
             nss_die();
         }
@@ -179,7 +181,7 @@ static char * nss_password_prompt(PK11SlotInfo *slot, PRBool retry, void *arg)
  * Enforce basic password sanity rules on the password. We don't do
  * any actual enforcement here but it demonstrates the sorts of things
  * that may be done.
- */ 
+ */
 static PRBool nss_check_password(unsigned char *cp)
 {
     int len;
@@ -216,9 +218,9 @@ static char * nss_no_password(PK11SlotInfo *slot, PRBool retry, void *arg)
  * exists then it may be used to store the token password(s).
  */
 static char *nss_get_password(FILE *input, FILE *output,
-                                       PK11SlotInfo *slot,
-                                       PRBool (*ok)(unsigned char *),
-                                       pphrase_arg_t *parg)
+                              PK11SlotInfo *slot,
+                              PRBool (*ok)(unsigned char *),
+                              pphrase_arg_t *parg)
 {
     char *pwdstr = NULL;
     char *token_name = NULL;
@@ -248,7 +250,7 @@ static char *nss_get_password(FILE *input, FILE *output,
                     line[tmp+1] = '\0';
                     ptr = PL_strchr(line, ':');
                     if (ptr == NULL) {
-                        ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+                        ap_log_error(APLOG_MARK, APLOG_ERR, 0, parg->s,
                            "Malformed password entry for token %s. Format should be token:password", token_name);
                         continue;
                     }
@@ -258,10 +260,32 @@ static char *nss_get_password(FILE *input, FILE *output,
             }
             fclose(pwd_fileptr);
         } else {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, parg->s,
                  "Unable to open password file %s", parg->mc->pphrase_dialog_path);
             nss_die();
         }
+    } else if ((parg->mc->pphrase_dialog_type == SSL_PPTYPE_FILTER) &&
+                (parg->mc->nInitCount == 1)) {
+        /* We only have tty during first module load */
+        const char *cmd = parg->mc->pphrase_dialog_path;
+        const char **argv = apr_palloc(parg->mc->pPool, sizeof(char *) * 4);
+        char *result;
+        int i;
+
+        ap_log_error(APLOG_MARK, APLOG_INFO, 0, parg->s,
+                     "Requesting pass phrase from dialog filter "
+                     "program (%s)", cmd);
+
+        argv[0] = cmd;
+        argv[1] = token_name;
+        argv[2] = "NSS";
+        argv[3] = NULL;
+
+        result = nss_util_readfilter(NULL, parg->mc->pPool, cmd, argv);
+
+        /* readfilter returns NULL in case of ANY error */
+        if (NULL != result)
+            pwdstr = strdup(result);
     }
 
     /* For SSL_PPTYPE_DEFER we only want to authenticate passwords found
@@ -286,14 +310,14 @@ static char *nss_get_password(FILE *input, FILE *output,
         sb.sem_op = -1;
         sb.sem_flg = SEM_UNDO;
         if (semop(parg->mc->semid, &sb, 1) == -1) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, parg->s,
                 "Unable to reserve semaphore resource");
         }
 
         snprintf(buf, 1024, "RETR\t%s", token_name);
         rv = apr_file_write_full(parg->mc->proc.in, buf, strlen(buf), NULL);
         if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, parg->s,
                 "Unable to write to pin store for slot: %s APR err: %d",  PK11_GetTokenName(slot), rv);
             nss_die();
         }
@@ -305,28 +329,28 @@ static char *nss_get_password(FILE *input, FILE *output,
         rv = apr_file_read(parg->mc->proc.out, buf, &nBytes);
         sb.sem_op = 1;
         if (semop(parg->mc->semid, &sb, 1) == -1) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, parg->s,
                 "Unable to free semaphore resource");
             /* perror("semop free resource id"); */
         }
 
         if (rv != APR_SUCCESS) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, parg->s,
                 "Unable to read from pin store for slot: %s APR err: %d",  PK11_GetTokenName(slot), rv);
             nss_die();
         }
 
-        /* Just return what we got. If we got this far and we don't have a 
+        /* Just return what we got. If we got this far and we don't have a
          * PIN then I/O is already shut down, so we can't do anything really
          * clever.
          */
         pwdstr = strdup(buf);
     }
 
-    /* If we got a password we're done */ 
+    /* If we got a password we're done */
     if (pwdstr)
         return pwdstr;
-    
+
     for (;;) {
         /* Prompt for password */
         if (isTTY) {
@@ -341,7 +365,7 @@ static char *nss_get_password(FILE *input, FILE *output,
             fprintf(output, "\n");
             echoOn(infd);
         }
-        /* stomp on newline */ 
+        /* stomp on newline */
         phrase[strlen((char*)phrase)-1] = 0;
 
         /* Validate password */
@@ -350,10 +374,10 @@ static char *nss_get_password(FILE *input, FILE *output,
             if (!isTTY) return 0;
             fprintf(output, "Password must be at least 8 characters long with one or more\n");
             fprintf(output, "non-alphabetic characters\n");
-            continue; 
+            continue;
         }
-        if (PK11_IsFIPS() && strlen(phrase) == 0) {
-            ap_log_error(APLOG_MARK, APLOG_ERR, 0, NULL,
+        if (PK11_IsFIPS() && strlen((char *)phrase) == 0) {
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, parg->s,
                 "The FIPS security policy requires that a password be set.");
             nss_die();
         } else

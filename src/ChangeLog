@@ -1,3 +1,115 @@
+2016-04-15  Rob Crittenden <rcritten@redhat.com>
+    * Become 1.0.14
+
+2016-03-31  Rob Crittenden <rcritten@redhat.com>
+    * Created valgrind suppression files to ease debugging
+
+2016-03-30  Rob Crittenden <rcritten@redhat.com>
+    * Implement SSL_PPTYPE_FILTER to call executables to get
+      the key password pins. Can be used to prompt with systemd.
+
+2016-03-30  Vitezslav Cizek <vcizek@suse.com>
+    * Improvements to migrate.pl
+
+2016-03-17  Rob Crittenden <rcritten@redhat.com>
+    * OpenSSL ciphers stopped parsing at +, CVE-2016-3099
+
+2016-03-04  Rob Crittenden <rcritten@redhat.com>
+
+    * Fix a number of issues discovered by clang-analyzer
+    * Become 1.0.13
+
+2016-03-02  Rob Crittenden <rcritten@redhat.com>
+
+    * Extract SAN from server/client certificates into env
+    * Fix memory leak when renegotiating a cipher
+
+2016-02-29  Rob Crittenden <rcritten@redhat.com>
+
+    * Fix test for DH cipher directive
+    * Check for test and netstat before trying to use them
+    * Don't ignore NSSProtocol when NSSFIPS is enabled
+      Based on patch by Matthew Harmsen <mharmsen@redhat.com>
+
+2016-02-24  Rob Crittenden <rcritten@redhat.com>
+
+    * Use proper shell syntax to avoid creating /0
+    
+2016-02-15  Rob Crittenden <rcritten@redhat.com>
+
+    * tests: Centralize the openssl ciphers flags when comparing
+
+2016-02-10  Rob Crittenden <rcritten@redhat.com>
+
+    * Basic test case for DHE cipher negotiation
+
+2016-02-09  Rob Crittenden <rcritten@redhat.com>
+
+    * Remove -DH from test strings, duplicate test, fix test
+    
+2016-02-08 Christian Heimes <cheimes@redhat.com>
+    * Add server support for DHE ciphers.
+      Similar patch was provided by Vitezslav Cizek <vcizek@suse.com>
+      Heavily modified by Rob Crittenden <rcritten@redhat.com>
+    
+2016-01-18  Rob Crittenden <rcritten@redhat.com>
+    * Drop the check that NSSProxyNickname be required
+    * Add basic reverse proxy test case
+
+2016-01-14  Rob Crittenden <rcritten@redhat.com>
+    * Don't send SSL alert on SNI lookup failure
+    * Fail for colons in credentials with FakeBasicAuth
+    * Always call SSL_ShutdownServerSessionIDCache() in ModuleKill
+
+2015-11-18  Rob Crittenden <rcritten@redhat.com>
+    * Document some python dependencies needed by make check
+    * Add cipher test for ECDH+aRSA
+    * Quote gcm and sha384 config values when comparing them
+
+2015-10-02  Rob Crittenden <rcritten@redhat.com>
+    * Integrate patch from Stanislav Tokos to set the SNI hostname
+      on reverse proxy requests.
+    * Cleanup a bunch of trailing whitespace spread across all the
+      source files.
+    * Become 1.0.12
+
+2015-10-01  Rob Crittenden <rcritten@redhat.com>
+    * Add compatibility for Apache 2.2 and older versions of NSS.
+      Tested on RHEL 6.5.
+    * Replace some PR_Free calls with more correct PORT_Free.
+    * Initialize session_tickets as FALSE instead of UNSET.
+    * Modernize the autotools configuration, generate config.h
+    * Get the version from config.h to get the proper mod_nss version
+      for reporting at runtime. It previously displayed the version
+      of Apache where the mod_nss version should have gone.
+
+2015-09-25  Rob Crittenden <rcritten@redhat.com>
+    * Add support for SNI
+    * Display hints if there are issues initializing NSS
+
+2015-09-24  Rob Crittenden <rcritten@redhat.com>
+    * Fix bad memory access and memory leak in CGI variables
+    * Add optional support for some SHA384 ciphers
+    * Add the SECURE_RENEG environment variable
+
+2015-09-21  Rob Crittenden <rcritten@redhat.com>
+    * Fix a bunch of issues related to OpenSSL cipher parsing
+
+2015-08-27  Rob Crittenden <rcritten@redhat.com>
+    * Fix a bunch of compiler warnings
+    * Permanently disabled openssl ciphers could be enabled (CVE-2015-5244)
+    
+2015-07-28  Matthew Harmsen <mharmsen@redhat.com>
+    * Add 'v' to refererences of protocols (e.g. SSLv3) (#1066236)
+
+2015-07-27  Rob Crittenden <rcritten@redhat.com>
+    * Add RenegBufferSize option (#1214366)
+    * Add support for TLS Session Tickets (RFC 5077)
+    * Fix logical AND support in OpenSSL cipher compatibility (CVE-2015-3276)
+
+2014-12-10  Rob Crittenden <rcritten@redhat.com>
+    * Become 1.0.11
+
 2014-11-12  Rob Crittenden <rcritten@redhat.com>
     * Add compatability for mod_ssl-style cipher definitions (#862938)
     * Add Camelia ciphers

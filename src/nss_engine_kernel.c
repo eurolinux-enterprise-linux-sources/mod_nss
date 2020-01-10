@@ -17,6 +17,8 @@
 #include "secerr.h"
 
 static void HandshakeDone(PRFileDesc *fd, void *doneflag);
+extern cipher_properties ciphers_def[];
+extern int ciphernum;
 
 /*
  *  Post Read Request Handler
@@ -25,6 +27,8 @@ int nss_hook_ReadReq(request_rec *r)
 {
     SSLConnRec *sslconn = myConnConfig(r->connection);
     PRFileDesc *ssl = sslconn ? sslconn->ssl : NULL;
+    SECItem *hostInfo = NULL;
+    SSLSrvConfigRec *sc = mySrvConfig(r->server);
 
     if (!sslconn) {
         return DECLINED;
@@ -68,13 +72,88 @@ int nss_hook_ReadReq(request_rec *r)
      * delayed interlinking from SSL back to request_rec
      */
     if (!ssl) {
-        return DECLINED; 
+        return DECLINED;
+    }
+
+    /*
+     * SNI is on by default. You can  switch SNI off by setting
+     * NSSSNI off.
+     */
+
+    if (sc->sni) {
+        hostInfo = SSL_GetNegotiatedHostInfo(ssl);
+        if (hostInfo != NULL) {
+            if (ap_is_initial_req(r) && (hostInfo->len != 0)) {
+                char *servername = NULL;
+                char *host, *scope_id;
+                apr_port_t port;
+                apr_status_t rv;
+                apr_pool_t *s_p;
+
+                apr_pool_create(&s_p, NULL);
+
+                servername = apr_pstrndup(s_p, (char *) hostInfo->data, hostInfo->len);
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                    "SNI request for %s", servername);
+
+                if (!r->hostname) {
+                    ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server,
+                        "Hostname %s provided via SNI, but no hostname"
+                        " provided in HTTP request", servername);
+                    apr_pool_destroy(s_p);
+                    SECITEM_FreeItem(hostInfo, PR_TRUE);
+                    return HTTP_BAD_REQUEST;
+                }
+
+                rv = apr_parse_addr_port(&host, &scope_id, &port, r->hostname, r->pool);
+                if (rv != APR_SUCCESS || scope_id) {
+                    apr_pool_destroy(s_p);
+                    SECITEM_FreeItem(hostInfo, PR_TRUE);
+                    return HTTP_BAD_REQUEST;
+                }
+
+                if (strcasecmp(host, servername)) {
+                    ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server,
+                        "Hostname %s provided via SNI and hostname %s provided"
+                        " via HTTP are different", servername, host);
+
+                    apr_pool_destroy(s_p);
+                    SECITEM_FreeItem(hostInfo, PR_TRUE);
+                    return HTTP_BAD_REQUEST;
+                }
+                apr_pool_destroy(s_p);
+                SECITEM_FreeItem(hostInfo, PR_TRUE);
+            }
+        } else if (((sc->strict_sni_vhost_check)
+                   || (mySrvConfig(r->server))->strict_sni_vhost_check)
+                   && r->connection->vhost_lookup_data) {
+            /*
+             * We are using a name based configuration here, but no hostname
+             * was provided via SNI. Don't allow that if are requested to do
+             * strict checking. Check whether this strict checking was set
+             * up either in the server config we used for handshaking or in
+             * our current server. This should avoid insecure configuration
+             * by accident.
+             */
+            ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server,
+                         "No hostname was provided via SNI for a name based"
+                         " virtual host");
+            apr_table_setn(r->notes, "error-notes",
+                           "Reason: The client software did not provide a "
+                           "hostname using Server Name Indication (SNI), "
+                           "which is required to access this server.<br />\n");
+            return HTTP_FORBIDDEN;
+        }
     }
 
     /*
      * Log information about incoming HTTPS requests
      */
-    if (r->server->log.level >= APLOG_INFO && ap_is_initial_req(r)) {
+#if AP_SERVER_MINORVERSION_NUMBER <= 2
+    if (r->server && r->server->loglevel >= APLOG_INFO && ap_is_initial_req(r)) {
+#else
+    if (r->server && r->server->log.level >= APLOG_INFO && ap_is_initial_req(r)) {
+#endif
         ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
                      "%s HTTPS request received for child %ld (server %s)",
                      (r->connection->keepalives <= 0 ?
@@ -102,15 +181,14 @@ int nss_hook_Access(request_rec *r)
     SSLSrvConfigRec *sc = mySrvConfig(r->server);
     SSLConnRec *sslconn = myConnConfig(r->connection);
     PRFileDesc *ssl     = sslconn ? sslconn->ssl : NULL;
-    apr_array_header_t *requires; 
-    nss_require_t *nss_requires; 
+    apr_array_header_t *requires;
+    nss_require_t *nss_requires;
     char *cp;
     int ok, i;
     BOOL renegotiate = FALSE, renegotiate_quick = FALSE;
     CERTCertificate *cert;
     CERTCertificate *peercert;
     int verify_old, verify;
-    extern cipher_properties ciphers_def[];
     PRBool ciphers_old[ciphernum];
     PRBool ciphers_new[ciphernum];
     char * cipher = NULL;
@@ -120,7 +198,7 @@ int nss_hook_Access(request_rec *r)
     /*
      * Support for SSLRequireSSL directive
      */
-    if (dc->bSSLRequired && !ssl) {
+    if (dc->bSSLRequired && (!ssl || !sslconn)) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                       "access to %s failed, reason: %s",
                       r->filename, "SSL connection required");
@@ -140,9 +218,14 @@ int nss_hook_Access(request_rec *r)
         return DECLINED;
     }
 
+    /* prevent NULL dereferences */
+    if (!sslconn) {
+        return DECLINED;
+    }
+
     /*
      * Support for per-directory reconfigured SSL connection parameters.
-     * 
+     *
      * This is implemented by forcing an SSL renegotiation with the
      * reconfigured parameter suite. But Apache's internal API processing
      * makes our life very hard here, because when internal sub-requests occur
@@ -160,7 +243,7 @@ int nss_hook_Access(request_rec *r)
      * the reconfigured parameter suite is stronger (more restrictions) than
      * the currently active one.
      */
-    
+
     /*
      * Override of NSSCipherSuite
      *
@@ -195,6 +278,8 @@ int nss_hook_Access(request_rec *r)
             SSL_SecurityStatus(ssl, &on, &cipher,
                                &keySize, &secretKeySize, &issuer,
                                &subject);
+            PORT_Free(issuer);
+            PORT_Free(subject);
         }
 
         /* configure new state */
@@ -211,7 +296,7 @@ int nss_hook_Access(request_rec *r)
                          "permitted SSL ciphers");
             nss_log_nss_error(APLOG_MARK, APLOG_ERR, r->server);
             free(ciphers);
-    
+
             return HTTP_FORBIDDEN;
         }
         free(ciphers);
@@ -300,7 +385,7 @@ int nss_hook_Access(request_rec *r)
             SSL_OptionSet(ssl, SSL_REQUEST_CERTIFICATE, PR_FALSE);
             SSL_OptionSet(ssl, SSL_REQUIRE_CERTIFICATE, SSL_REQUIRE_NEVER);
         }
-    
+
         /* determine whether we've to force a renegotiation */
         if (!renegotiate && verify != verify_old) {
             if (((verify_old == SSL_CVERIFY_NONE) &&
@@ -340,7 +425,7 @@ int nss_hook_Access(request_rec *r)
      * handshake immediately; once the SSL library moves to the
      * "accept" state, it will reject the SSL packets which the client
      * is sending for the request body.
-     * 
+     *
      * To allow authentication to complete in this auth hook, the
      * solution used here is to fill a (bounded) buffer with the
      * request body, and then to reinject that request body later.
@@ -351,9 +436,18 @@ int nss_hook_Access(request_rec *r)
                 && strcmp(apr_table_get(r->headers_in, "content-length"), "0")))
         && !r->expecting_100) {
         int rv;
+        apr_size_t rsize;
 
-        /* Fill the I/O buffer with the request body if possible. */
-        rv = nss_io_buffer_fill(r);
+        rsize = dc->nRenegBufferSize == UNSET ? DEFAULT_RENEG_BUFFER_SIZE :
+                                                dc->nRenegBufferSize;
+
+        if (rsize > 0) {
+            /* Fill the I/O buffer with the request body if possible. */
+            rv = nss_io_buffer_fill(r, rsize);
+        } else {
+            /* If the reneg buffer size is set to zero, just fail. */
+            rv = HTTP_REQUEST_ENTITY_TOO_LARGE;
+        }
 
         if (rv) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -392,16 +486,16 @@ int nss_hook_Access(request_rec *r)
                          "just re-verifying the peer");
 
             peerCert = SSL_PeerCertificate(sslconn->ssl);
- 
+
             pinArg = SSL_RevealPinArg(sslconn->ssl);
- 
+
             rv = CERT_VerifyCertNow(CERT_GetDefaultCertDB(),
                                     peerCert,
                                     PR_TRUE,
                                     certUsageSSLClient,
                                     pinArg);
- 
-            CERT_DestroyCertificate(peerCert); 
+
+            CERT_DestroyCertificate(peerCert);
 
             if (rv != SECSuccess) {
                 ap_log_error(APLOG_MARK, APLOG_ERR, 0, r->server,
@@ -490,12 +584,18 @@ int nss_hook_Access(request_rec *r)
             int on, keySize, secretKeySize;
             char *issuer, *subject;
 
+            PORT_Free(cipher);
+
             SSL_SecurityStatus(ssl, &on, &cipher,
                                &keySize, &secretKeySize, &issuer,
                                &subject);
 
             ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
                 "Re-negotiated cipher %s", cipher);
+
+            PORT_Free(cipher);
+            PORT_Free(issuer);
+            PORT_Free(subject);
         }
 
         /*
@@ -520,8 +620,25 @@ int nss_hook_Access(request_rec *r)
     if ((dc->nOptions & SSL_OPT_FAKEBASICAUTH) == 0 && dc->szUserName) {
         char *val = nss_var_lookup(r->pool, r->server, r->connection,
                                    r, (char *)dc->szUserName);
-        if (val && val[0])
-            r->user = val;
+        if (val && val[0]) {
+            /* RFC2617 denies usage of colon in BasicAuth */
+            char *colon = strchr(val, ':');
+            if (colon == NULL) {
+                r->user = val;
+            }
+            else {
+                cp = apr_psprintf(r->pool,
+                                "FakeBasicAuth is configured and colon "
+                                "(\":\") character exists in the \"%s\" "
+                                "username", val);
+
+                ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                            "access to %s failed, reason: %s",
+                            r->filename, cp);
+
+                return HTTP_FORBIDDEN;
+            }
+        }
     }
 
     /*
@@ -554,7 +671,11 @@ int nss_hook_Access(request_rec *r)
             ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
                          "Access to %s denied for %s "
                          "(requirement expression not fulfilled)",
+#if AP_SERVER_MINORVERSION_NUMBER <= 2
+                         r->filename, r->connection->remote_ip);
+#else
                          r->filename, r->connection->client_ip);
+#endif
 
             ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
                          "Failed expression: %s", req->cpExpr);
@@ -598,7 +719,7 @@ int nss_hook_UserCheck(request_rec *r)
     SSLDirConfigRec *dc = myDirConfig(r);
     char *clientdn;
     const char *auth_line, *username, *password;
-     
+
     /*
      * Additionally forbid access (again)
      * when strict require option is used.
@@ -641,7 +762,7 @@ int nss_hook_UserCheck(request_rec *r)
         }
     }
 
-    /* 
+    /*
      * We decline operation in various situations...
      * - NSSOptions +FakeBasicAuth not configured
      * - r->user already authenticated
@@ -662,6 +783,20 @@ int nss_hook_UserCheck(request_rec *r)
 
     clientdn = (char *)sslconn->client_dn;
 
+    char *colon = strchr(clientdn, ':');
+    if (colon != NULL) {
+        char *cp = apr_psprintf(r->pool,
+                        "FakeBasicAuth is configured and colon "
+                        "(\":\") character exists in the \"%s\" "
+                        "username", clientdn);
+
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                    "access to %s failed, reason: %s",
+                    r->filename, cp);
+
+        return HTTP_FORBIDDEN;
+    }
+
     /*
      * Fake a password - which one would be immaterial, as, it seems, an empty
      * password in the users file would match ALL incoming passwords, if only
@@ -681,7 +816,7 @@ int nss_hook_UserCheck(request_rec *r)
                                                          ":password", NULL)),
                             NULL);
     apr_table_set(r->headers_in, "Authorization", auth_line);
-    
+
     ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server,
                  "Faking HTTP Basic Auth header: \"Authorization: %s\"",
                  auth_line);
@@ -696,7 +831,7 @@ int nss_hook_Auth(request_rec *r)
 
     ap_log_error(APLOG_MARK, APLOG_INFO, 0, r->server, "nss_hook_Auth");
     /*
-     * Additionally forbid access (again) 
+     * Additionally forbid access (again)
      * when strict require option is used.
      */
     if ((dc->nOptions & SSL_OPT_STRICTREQUIRE) &&
@@ -708,14 +843,15 @@ int nss_hook_Auth(request_rec *r)
     return DECLINED;
 }
 
-/*  
+/*
  *   Fixup Handler
- */ 
-    
+ */
+
 static const char *nss_hook_Fixup_vars[] = {
     "SSL_VERSION_INTERFACE",
     "SSL_VERSION_LIBRARY",
     "SSL_PROTOCOL",
+    "SSL_SECURE_RENEG",
     "SSL_CIPHER",
     "SSL_CIPHER_NAME",
     "SSL_CIPHER_EXPORT",
@@ -806,6 +942,8 @@ int nss_hook_Fixup(request_rec *r)
     int i;
     CERTCertificate *cert;
     CERTCertificateList *chain = NULL;
+    SECItem *hostInfo = NULL;
+    const char *servername;
 
     /*
      * Check to see if SSL is on
@@ -831,6 +969,15 @@ int nss_hook_Fixup(request_rec *r)
     /* the always present HTTPS (=HTTP over SSL) flag! */
     apr_table_setn(env, "HTTPS", "on");
 
+    /* add content of SNI TLS extension (if supplied with ClientHello) */
+    hostInfo = SSL_GetNegotiatedHostInfo(ssl);
+    if (hostInfo) {
+        servername = apr_pstrndup(r->pool, (char *) hostInfo->data, hostInfo->len);
+        apr_table_set(env, "SSL_TLS_SNI", servername);
+        SECITEM_FreeItem(hostInfo, PR_TRUE);
+    }
+
+    modnss_var_extract_san_entries(env, sslconn->ssl, r->pool);
     /* standard SSL environment variables */
     if (dc->nOptions & SSL_OPT_STDENVVARS) {
         for (i = 0; nss_hook_Fixup_vars[i]; i++) {
@@ -856,8 +1003,8 @@ int nss_hook_Fixup(request_rec *r)
 
         apr_table_setn(env, "SSL_CLIENT_CERT", val);
 
-        
-        /* Need to fetch the entire SSL cert chain and add it to the 
+
+        /* Need to fetch the entire SSL cert chain and add it to the
          * variable SSL_CLIENT_CERT_CHAIN_[0..n]
          */
         cert = SSL_PeerCertificate(ssl);
